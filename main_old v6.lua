@@ -930,28 +930,6 @@ local function addNotif(msg)
     end
 end
 
-local function runLocalUpdateBat()
-    if love.system and love.system.getOS and love.system.getOS() ~= "Windows" then
-        addNotif("⚠ El actualizador .bat solo funciona en Windows")
-        return
-    end
-
-    local sep = package.config:sub(1, 1)
-    local save_dir = love.filesystem.getSaveDirectory()
-    local bat_path = save_dir .. sep .. "update.bat"
-
-    local f = io.open(bat_path, "r")
-    if not f then
-        addNotif("⚠ No se encontró update.bat en la carpeta de guardado")
-        return
-    end
-    f:close()
-
-    local cmd = string.format('cmd /c start "" "%s"', bat_path)
-    os.execute(cmd)
-    love.event.quit()
-end
-
 -- ============= CSV / PERSISTENCIA =============
 local function escCSV(s)
     s = tostring(s or "")
@@ -2028,9 +2006,6 @@ local function drawInicio()
     love.graphics.setFont(G.fonts.large)
     love.graphics.print("Panel de Control Principal", ox, oy + 4)
     
-    local upd_hov = hover(ox + aw - 260, oy, 120, 30)
-    drawButton(ox + aw - 260, oy, 120, 30, "⚙  Update", C.orange, C.white, G.fonts.small, 5, upd_hov)
-
     local ref_hov = hover(ox + aw - 135, oy, 120, 30)
     drawButton(ox + aw - 135, oy, 120, 30, "↺  Refrescar", C.card2, C.white, G.fonts.small, 5, ref_hov)
 
@@ -4601,19 +4576,6 @@ function love.mousepressed(x, y, btn)
         local chart_y = card_y + card_h + 12
         local bw, bh = 68, 24
         local mkeys = {"horas", "dias", "meses"}
-
-        if hover(ox2 + aw2 - 260, oy2, 120, 30) then
-            runLocalUpdateBat()
-            return
-        end
-
-        if hover(ox2 + aw2 - 135, oy2, 120, 30) then
-            loadClients()
-            loadTx()
-            loadNotes()
-            addNotif("🔄 Datos recargados")
-            return
-        end
 
         for i = 1, 3 do
             local bx2 = ox2 + chart_w - (4 - i) * (bw + 6) - 14

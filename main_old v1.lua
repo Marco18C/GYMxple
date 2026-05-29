@@ -1,0 +1,2217 @@
+-- ====================================================
+-- GYM MANAGER - Sistema de Gestión de Gimnasio
+-- Desarrollado en Löve2D (Lua) | v1.0
+-- ====================================================
+
+local utf8 = require("utf8")
+
+-- ============= DIMENSIONES Y COLORES =============
+local W, H = 1280, 720
+local SIDEBAR_W = 195
+local HEADER_H  = 54
+
+local C = {
+    bg          = {0.030, 0.025, 0.045},
+    sidebar_bg  = {0.040, 0.032, 0.060},
+    sidebar_sel = {0.580, 0.320, 1.000},
+    header_bg   = {0.050, 0.040, 0.075},
+
+    card        = {0.075, 0.060, 0.110},
+    card2       = {0.065, 0.050, 0.095},
+    input_bg    = {0.100, 0.082, 0.150},
+
+    white       = {0.95, 0.95, 1.00},
+    gray        = {0.62, 0.60, 0.74},
+    dim         = {0.36, 0.34, 0.48},
+
+    blue        = {0.35, 0.60, 1.00},
+    green       = {0.28, 0.85, 0.50},
+    red         = {1.00, 0.30, 0.40},
+    yellow      = {1.00, 0.80, 0.25},
+    orange      = {1.00, 0.52, 0.18},
+    cyan        = {0.20, 0.90, 1.00},
+    purple      = {0.72, 0.42, 1.00},
+
+    btn_green   = {0.18, 0.72, 0.40},
+    btn_cancel  = {0.160, 0.130, 0.240},
+
+    border      = {0.180, 0.140, 0.300},
+
+    row_a       = {0.082, 0.066, 0.120},
+    row_b       = {0.072, 0.058, 0.108},
+    row_red     = {0.220, 0.080, 0.110},
+}
+
+-- ============= ESTADO GLOBAL =============
+local G = {
+    screen       = "inicio",
+    clients      = {},
+    transactions = {},
+    notes        = {},
+    notifs       = {},
+    next_id      = 1,
+    fonts        = {},
+    text_inputs  = {},
+    focus        = nil,
+    dropdown     = nil,
+    notifs_enabled = true,
+    scroll       = {inicio = 0, clientes = 0, agenda = 0, soporte = 0, configuracion = 0},
+    chart_mode   = "dias",
+    ag_view      = "semana",
+    ag_week_off  = 0,
+    ag_selected  = nil,
+    cl_filter    = "todos",
+    show_confirm  = false,
+    show_new_note = false,
+    new_note_day   = 0,
+    new_note_color = "blue",
+    edit_client_id = nil,
+    time_str     = "", 
+    date_str     = "",
+    dt           = 0,
+}
+
+local PLAN_PRICES  = {Diario = 5, Semanal = 25, Mensual = 80}
+local PLAN_OPTIONS = {"Diario", "Semanal", "Mensual"}
+local PAGO_OPTIONS = {"Efectivo", "Tarjeta Crédito", "Tarjeta Débito", "Transferencia"}
+local NOTE_COLORS  = {blue = C.blue, green = C.green, yellow = C.yellow, red = C.red}
+local MONTH_NAMES  = {"Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"}
+local DAY_SHORT    = {"Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"}
+
+-- ============= UTILIDADES =============
+local function setColor(c, a) 
+    love.graphics.setColor(c[1], c[2], c[3], a or 1)
+end
+
+local function clamp(v, lo, hi) 
+    return math.max(lo, math.min(hi, v))
+end
+
+local function rr(x, y, w, h, r, c, a)
+    if c then setColor(c, a) end
+    love.graphics.rectangle("fill", x, y, w, h, r or 6, r or 6)
+end
+
+local function rrLine(x, y, w, h, r, c, a)
+    if c then setColor(c, a) end
+    love.graphics.rectangle("line", x, y, w, h, r or 6, r or 6)
+end
+
+local function hover(x, y, w, h)
+    local mx, my = love.mouse.getPosition()
+    return mx >= x and mx <= x + w and my >= y and my <= y + h
+end
+
+local function dateStr(d)
+    return string.format("%02d/%02d/%04d", d.day, d.month, d.year)
+end
+
+local function today0()
+    local d = os.date("*t")
+    return os.time({year = d.year, month = d.month, day = d.day, hour = 0, min = 0, sec = 0})
+end
+
+local function subscriptionExpiry(plan, start_ts)
+    if plan == "Diario" then
+        local d = os.date("*t", start_ts)
+        return os.time({year = d.year, month = d.month, day = d.day, hour = 23, min = 59, sec = 59})
+    elseif plan == "Semanal" then
+        return start_ts + 7 * 86400
+    else -- Mensual
+        local d = os.date("*t", start_ts)
+        local nm = d.month + 1
+        local ny = d.year
+        if nm > 12 then 
+            nm = 1 
+            ny = ny + 1 
+        end
+        return os.time({year = ny, month = nm, day = d.day, hour = 23, min = 59, sec = 59})
+    end
+end
+
+local function isActive(c)
+    if not c or not c.expiry then return false end
+    return os.time() <= c.expiry
+end
+
+local function addNotif(msg)
+    if not G.notifs_enabled then return end
+    table.insert(G.notifs, 1, {msg = msg, ts = os.time()})
+    if #G.notifs > 25 then 
+        table.remove(G.notifs) 
+    end
+end
+
+-- ============= CSV / PERSISTENCIA =============
+local function escCSV(s)
+    s = tostring(s or "")
+    if s:find('[,"\n\r]') then 
+        s = '"' .. s:gsub('"', '""') .. '"' 
+    end
+    return s
+end
+
+local function parseCSV(line)
+    local r, i = {}, 1
+    while i <= #line do
+        if line:sub(i, i) == '"' then
+            local j, f = i + 1, ""
+            while j <= #line do
+                if line:sub(j, j) == '"' then
+                    if line:sub(j + 1, j + 1) == '"' then 
+                        f = f .. '"'
+                        j = j + 2
+                    else 
+                        j = j + 1
+                        break 
+                    end
+                else 
+                    f = f .. line:sub(j, j)
+                    j = j + 1 
+                end
+            end
+            table.insert(r, f)
+            i = j
+            if line:sub(i, i) == ',' then 
+                i = i + 1 
+            end
+        else
+            local j = line:find(',', i) or (#line + 1)
+            table.insert(r, line:sub(i, j - 1))
+            i = j + 1
+        end
+    end
+    return r
+end
+
+local function ensureDir(d) 
+    love.filesystem.createDirectory(d) 
+end
+
+local function saveClients()
+    ensureDir("data")
+    local lines = {"id,nombres,apellidos,telefono,plan,start_ts,expiry,tipo_pago,estado_salud,peso"}
+    
+    for _, c in ipairs(G.clients) do
+        table.insert(lines, table.concat({
+            escCSV(c.id), escCSV(c.nombres), escCSV(c.apellidos),
+            escCSV(c.telefono), escCSV(c.plan),
+            escCSV(c.start_ts), escCSV(c.expiry),
+            escCSV(c.tipo_pago), escCSV(c.estado_salud), escCSV(c.peso)
+        }, ","))
+    end
+    
+    love.filesystem.write("data/clientes.csv", table.concat(lines, "\n"))
+end
+
+local function loadClients()
+    local txt = love.filesystem.read("data/clientes.csv")
+    if not txt then return end
+    
+    local ls = {}
+    for l in txt:gmatch("[^\n]+") do 
+        table.insert(ls, l) 
+    end
+    
+    G.clients = {}
+    for i = 2, #ls do
+        local f = parseCSV(ls[i])
+        if #f >= 10 then
+            local c = {
+                id = tonumber(f[1]) or i - 1, 
+                nombres = f[2], 
+                apellidos = f[3], 
+                telefono = f[4],
+                plan = f[5], 
+                start_ts = tonumber(f[6]) or os.time(),
+                expiry = tonumber(f[7]) or os.time(), 
+                tipo_pago = f[8],
+                estado_salud = f[9], 
+                peso = f[10]
+            }
+            table.insert(G.clients, c)
+            if c.id >= G.next_id then 
+                G.next_id = c.id + 1 
+            end
+        end
+    end
+end
+
+local function monthFolder()
+    local d = os.date("*t")
+    return string.format("%04d-%02d", d.year, d.month)
+end
+
+local function saveTx(amount, plan, client_name)
+    local folder = "transacciones/" .. monthFolder()
+    ensureDir("transacciones")
+    ensureDir(folder)
+    
+    local path = folder .. "/tx.csv"
+    local existing = love.filesystem.read(path) or "ts,fecha,hora,monto,plan,cliente\n"
+    
+    local ts = os.time()
+    local d = os.date("*t", ts)
+    
+    love.filesystem.write(path, existing .. string.format(
+        "%d,%s,%02d:%02d,%s,%s,%s\n",
+        ts, dateStr(d), d.hour, d.min, escCSV(tostring(amount)), escCSV(plan), escCSV(client_name)
+    ))
+    
+    table.insert(G.transactions, {
+        ts = ts, 
+        monto = amount, 
+        plan = plan, 
+        cliente = client_name,
+        hora = string.format("%02d:%02d", d.hour, d.min)
+    })
+end
+
+local function loadTx()
+    G.transactions = {}
+    for offset = 0, 11 do
+        local d = os.date("*t")
+        local m = d.month - offset
+        local y = d.year
+        
+        while m <= 0 do 
+            m = m + 12
+            y = y - 1 
+        end
+        
+        local folder = string.format("%04d-%02d", y, m)
+        local txt = love.filesystem.read("transacciones/" .. folder .. "/tx.csv")
+        
+        if txt then
+            local ls = {}
+            for l in txt:gmatch("[^\n]+") do 
+                table.insert(ls, l) 
+            end
+            
+            for i = 2, #ls do
+                local f = parseCSV(ls[i])
+                if #f >= 6 then
+                    table.insert(G.transactions, {
+                        ts = tonumber(f[1]) or 0, 
+                        monto = tonumber(f[4]) or 0,
+                        plan = f[5], 
+                        cliente = f[6], 
+                        hora = f[3]
+                    })
+                end
+            end
+        end
+    end
+    table.sort(G.transactions, function(a, b) return a.ts < b.ts end)
+end
+
+local function saveNotes()
+    ensureDir("data")
+    local lines = {"day,hour,text,color,duration"}
+    
+    for _, n in ipairs(G.notes) do
+        table.insert(lines, string.format("%d,%d,%s,%s,%d",
+            n.day, n.hour, escCSV(n.text or ""), n.color or "blue", n.duration or 1))
+    end
+    
+    love.filesystem.write("data/notes.csv", table.concat(lines, "\n"))
+end
+
+local function loadNotes()
+    local txt = love.filesystem.read("data/notes.csv")
+    if not txt then return end
+    
+    G.notes = {}
+    for l in txt:gmatch("[^\n]+") do
+        if not l:find("^day") then
+            local f = parseCSV(l)
+            if #f >= 5 then
+                table.insert(G.notes, {
+                    day = tonumber(f[1]) or 0, 
+                    hour = tonumber(f[2]) or 8,
+                    text = f[3], 
+                    color = f[4], 
+                    duration = tonumber(f[5]) or 1
+                })
+            end
+        end
+    end
+end
+
+-- ============= COMPONENTES UI =============
+local function drawButton(x, y, w, h, label, bgColor, textColor, fnt, r, isHov)
+    local bc = isHov and {bgColor[1] * 1.18, bgColor[2] * 1.18, bgColor[3] * 1.18} or bgColor
+    rr(x, y, w, h, r or 5, bc)
+    
+    setColor(textColor or C.white)
+    local f = fnt or G.fonts.normal
+    love.graphics.setFont(f)
+    
+    local tw = f:getWidth(label)
+    local th = f:getHeight()
+    love.graphics.print(label, x + (w - tw) / 2, y + (h - th) / 2)
+end
+
+local function drawInput(x, y, w, h, key, ph, fnt)
+    local focused = G.focus == key
+    local val = G.text_inputs[key] or ""
+    local hov = hover(x, y, w, h)
+    
+    rr(x, y, w, h, 5, C.input_bg)
+    setColor(focused and C.blue or (hov and {0.25, 0.25, 0.35} or C.border))
+    
+    love.graphics.setLineWidth(focused and 1.5 or 1)
+    rrLine(x, y, w, h, 5)
+    love.graphics.setLineWidth(1)
+    
+    local f = fnt or G.fonts.normal
+    love.graphics.setFont(f)
+    local th = f:getHeight()
+    
+    if val == "" and not focused then
+        setColor(C.dim)
+        love.graphics.print(ph or "", x + 9, y + (h - th) / 2)
+    else
+        setColor(C.white)
+        local disp = focused and (val .. "|") or val
+        local tw = f:getWidth(disp)
+        
+        if tw > w - 18 then
+            local s = 1
+            while f:getWidth(disp:sub(s)) > w - 18 do 
+                s = s + 1 
+            end
+            disp = disp:sub(s)
+        end
+        
+        love.graphics.print(disp, x + 9, y + (h - th) / 2)
+    end
+end
+
+local function drawDropdown(x, y, w, h, key, options)
+    local sel = G.text_inputs[key] or options[1]
+    local hov = hover(x, y, w, h)
+    
+    rr(x, y, w, h, 5, C.input_bg)
+    setColor(hov and {0.25, 0.25, 0.35} or C.border)
+    rrLine(x, y, w, h, 5)
+    
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.normal)
+    love.graphics.print(sel, x + 9, y + (h - G.fonts.normal:getHeight()) / 2)
+    
+    setColor(C.dim)
+    love.graphics.print("▾", x + w - 20, y + (h - G.fonts.normal:getHeight()) / 2)
+
+    if G.dropdown == key then
+        local dy = y + h + 2
+        local dh = #options * 30 + 8
+        
+        rr(x, dy, w, dh, 5, {0.12, 0.12, 0.20})
+        setColor(C.border)
+        rrLine(x, dy, w, dh, 5)
+        
+        for i, opt in ipairs(options) do
+            local oy = dy + 4 + (i - 1) * 30
+            if hover(x + 2, oy, w - 4, 28) then
+                rr(x + 2, oy, w - 4, 28, 4, {0.20, 0.20, 0.32})
+            end
+            
+            setColor(sel == opt and C.blue or C.white)
+            love.graphics.setFont(G.fonts.normal)
+            love.graphics.print(opt, x + 10, oy + 6)
+        end
+    end
+end
+
+-- ============= CERRAR CAJA =============
+local function cerrarCaja()
+    local n = 0
+    for _, c in ipairs(G.clients) do
+        if c.plan == "Diario" and isActive(c) then
+            c.expiry = os.time() - 1
+            n = n + 1
+        end
+    end
+    saveClients()
+    addNotif(string.format("💰 Caja cerrada — %d membresía(s) diaria(s) vencida(s)", n))
+    G.show_confirm = false
+end
+
+-- ============= PANTALLA: INICIO =============
+local function drawChart(x, y, w, h)
+    rr(x, y, w, h, 8, C.card)
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.normal)
+    love.graphics.print("Historial de Transacciones", x + 14, y + 12)
+
+    -- Mode buttons
+    local modes = {"Horas", "Días", "Meses"}
+    local mkeys = {"horas", "dias", "meses"}
+    local bw, bh = 68, 24
+    
+    for i, m in ipairs(modes) do
+        local bx = x + w - (4 - i) * (bw + 6) - 14
+        local by = y + 9
+        local active = G.chart_mode == mkeys[i]
+        
+        rr(bx, by, bw, bh, 4, active and C.sidebar_sel or C.card2)
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.printf(m, bx, by + (bh - G.fonts.small:getHeight()) / 2, bw, "center")
+    end
+
+    -- Data preparation
+    local data, labels = {}, {}
+    local now = os.time()
+    
+    if G.chart_mode == "horas" then
+        local d = os.date("*t")
+        for hr = 0, 23 do
+            local tot = 0
+            for _, t in ipairs(G.transactions) do
+                local td = os.date("*t", t.ts)
+                if td.year == d.year and td.month == d.month and td.day == d.day and td.hour == hr then
+                    tot = tot + (t.monto or 0)
+                end
+            end
+            table.insert(data, tot)
+            table.insert(labels, hr % 4 == 0 and string.format("%02d:00", hr) or "")
+        end
+    elseif G.chart_mode == "dias" then
+        for off = 29, 0, -1 do
+            local ts = now - off * 86400
+            local d = os.date("*t", ts)
+            local tot = 0
+            for _, t in ipairs(G.transactions) do
+                local td = os.date("*t", t.ts)
+                if td.year == d.year and td.month == d.month and td.day == d.day then
+                    tot = tot + (t.monto or 0) 
+                end
+            end
+            table.insert(data, tot)
+            table.insert(labels, off % 5 == 0 and string.format("%d/%d", d.day, d.month) or "")
+        end
+    else -- meses
+        local d0 = os.date("*t")
+        for off = 11, 0, -1 do
+            local m = d0.month - off
+            local y = d0.year
+            while m <= 0 do 
+                m = m + 12
+                y = y - 1 
+            end
+            
+            local tot = 0
+            for _, t in ipairs(G.transactions) do
+                local td = os.date("*t", t.ts)
+                if td.year == y and td.month == m then 
+                    tot = tot + (t.monto or 0) 
+                end
+            end
+            table.insert(data, tot)
+            local mnames = {"Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"}
+            table.insert(labels, mnames[m])
+        end
+    end
+
+    local maxv = 1
+    for _, v in ipairs(data) do 
+        if v > maxv then maxv = v end 
+    end
+
+    local cx2, cy2 = x + 50, y + 50
+    local cw2, ch2 = w - 60, h - 72
+
+    -- Grid
+    setColor(C.border)
+    love.graphics.setLineWidth(0.5)
+    for i = 0, 4 do
+        local gy = cy2 + ch2 - i / 4 * ch2
+        love.graphics.line(cx2, gy, cx2 + cw2, gy)
+        
+        setColor(C.dim)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.print(string.format("$%d", math.floor(maxv * i / 4)), x + 2, gy - 6)
+        setColor(C.border)
+    end
+    love.graphics.setLineWidth(1)
+
+    local n = #data
+    if n == 0 then
+        setColor(C.dim)
+        love.graphics.setFont(G.fonts.normal)
+        love.graphics.printf("Sin datos todavía", cx2, cy2 + ch2 / 2 - 10, cw2, "center")
+        return
+    end
+
+    local bw2 = cw2 / n - 1.5
+    for i, v in ipairs(data) do
+        local bx2 = cx2 + (i - 1) * cw2 / n
+        local bh2 = math.max((v / maxv) * ch2, v > 0 and 2 or 0)
+        local by2 = cy2 + ch2 - bh2
+        local t = v / maxv
+        
+        setColor({0.15 + t * 0.1, 0.35 + t * 0.4, 0.75 + t * 0.2})
+        love.graphics.rectangle("fill", bx2, by2, math.max(bw2, 1), bh2, 2, 2)
+        
+        if labels[i] ~= "" then
+            setColor(C.dim)
+            love.graphics.setFont(G.fonts.tiny)
+            local lw = G.fonts.tiny:getWidth(labels[i])
+            love.graphics.print(labels[i], bx2 + (cw2 / n - lw) / 2, cy2 + ch2 + 3)
+        end
+    end
+end
+
+local function drawInicio()
+    local ox, oy = SIDEBAR_W + 15, HEADER_H + 10
+    local aw = W - SIDEBAR_W - 25
+
+    -- Title + refresh
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.large)
+    love.graphics.print("Panel de Control Principal", ox, oy + 4)
+    
+    local ref_hov = hover(ox + aw - 135, oy, 120, 30)
+    drawButton(ox + aw - 135, oy, 120, 30, "↺  Refrescar", C.card2, C.white, G.fonts.small, 5, ref_hov)
+
+    -- Stat cards
+    local now_d = os.date("*t")
+    local total_m = #G.clients
+    local active_m, expired_m = 0, 0
+    
+    for _, c in ipairs(G.clients) do
+        if isActive(c) then 
+            active_m = active_m + 1 
+        else 
+            expired_m = expired_m + 1 
+        end
+    end
+    
+    local new_month = 0
+    for _, c in ipairs(G.clients) do
+        local d = os.date("*t", c.start_ts or 0)
+        if d.month == now_d.month and d.year == now_d.year then 
+            new_month = new_month + 1 
+        end
+    end
+    
+    local monthly_inc = 0
+    local today_att = 0
+    for _, t in ipairs(G.transactions) do
+        local d = os.date("*t", t.ts)
+        if d.month == now_d.month and d.year == now_d.year then 
+            monthly_inc = monthly_inc + (t.monto or 0) 
+        end
+        if d.year == now_d.year and d.month == now_d.month and d.day == now_d.day then 
+            today_att = today_att + 1 
+        end
+    end
+
+    local cw4 = (aw - 40) / 4
+    local card_y = oy + 40
+    local card_h = 80
+
+    local cards = {
+        {title = "Total Miembros", value = tostring(total_m), sub = string.format("Activos: %d  Vencidos: %d", active_m, expired_m), color = C.blue},
+        {title = "Nuevos Registros (Mes)", value = tostring(new_month), sub = "+0% vs. mes anterior", color = C.cyan},
+        {title = "Ingresos Mensuales", value = string.format("$%d", monthly_inc), sub = "Meta: $50,000", color = C.green},
+        {title = "Asistencias Hoy", value = tostring(today_att), sub = "Hora pico: 18:00", color = C.yellow},
+    }
+    
+    for i, cd in ipairs(cards) do
+        local cx2 = ox + (i - 1) * (cw4 + 8)
+        rr(cx2, card_y, cw4, card_h, 8, C.card)
+        
+        setColor(cd.color)
+        love.graphics.rectangle("fill", cx2, card_y, 4, card_h, 2, 2)
+        
+        setColor(C.gray)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.print(cd.title, cx2 + 13, card_y + 10)
+        
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.large)
+        love.graphics.print(cd.value, cx2 + 13, card_y + 28)
+        
+        setColor(cd.color)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.print(cd.sub, cx2 + 13, card_y + 62)
+    end
+
+    -- Chart + notifs layout
+    local chart_y = card_y + card_h + 12
+    local notif_w = 245
+    local chart_w = aw - notif_w - 16
+
+    drawChart(ox, chart_y, chart_w, 180)
+
+    -- Notifications panel
+    local nx = ox + chart_w + 8
+    local ny = chart_y
+    local nw = notif_w
+    local nh_full = H - ny - 12
+
+    rr(nx, ny, nw, nh_full, 8, C.card)
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.normal)
+    love.graphics.print("Notificaciones", nx + 10, ny + 10)
+
+    love.graphics.setScissor(nx, ny + 34, nw, nh_full - 34)
+    for i, n in ipairs(G.notifs) do
+        local ity = ny + 34 + (i - 1) * 46
+        if ity > ny + nh_full then break end
+
+        rr(nx + 6, ity, nw - 12, 40, 5, C.card2)
+        setColor(C.blue)
+        love.graphics.circle("fill", nx + 16, ity + 12, 4)
+
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.printf(n.msg, nx + 24, ity + 4, nw - 30, "left")
+
+        setColor(C.dim)
+        local d = os.date("*t", n.ts)
+        love.graphics.print(string.format("%02d:%02d", d.hour, d.min), nx + 10, ity + 26)
+    end
+    love.graphics.setScissor()
+
+    -- Client list
+    local list_y = chart_y + 180 + 10
+    local list_h = H - list_y - 12
+
+    if list_h < 60 then return end
+
+    rr(ox, list_y, chart_w, list_h, 8, C.card)
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.normal)
+    love.graphics.print("Clientes", ox + 12, list_y + 9)
+
+    -- Sort
+    local sorted = {}
+    for _, c in ipairs(G.clients) do 
+        table.insert(sorted, c) 
+    end
+
+    table.sort(sorted, function(a, b)
+        local aa = isActive(a) and 1 or 0
+        local ba = isActive(b) and 1 or 0
+        if aa ~= ba then return aa > ba end
+        return (a.start_ts or 0) > (b.start_ts or 0)
+    end)
+
+    local row_h = 48
+    local sc = G.scroll.inicio
+
+    love.graphics.setScissor(ox + 4, list_y + 32, chart_w - 8, list_h - 36)
+    for i, c in ipairs(sorted) do
+        local ry = list_y + 32 + (i - 1) * row_h - sc
+        if ry + row_h < list_y + 32 then goto cont end
+        if ry > list_y + list_h then break end
+
+        local act = isActive(c)
+        setColor(act and (i % 2 == 0 and C.row_b or C.row_a) or C.row_red)
+        love.graphics.rectangle("fill", ox + 6, ry, chart_w - 12, row_h - 2, 4, 4)
+
+        -- Status dot
+        setColor(act and C.green or C.red)
+        love.graphics.circle("fill", ox + 20, ry + row_h / 2, 6)
+
+        -- Name
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.normal)
+        love.graphics.print(c.nombres .. " " .. c.apellidos, ox + 34, ry + 5)
+
+        -- Plan badge
+        local pc = c.plan == "Mensual" and C.blue or (c.plan == "Semanal" and C.cyan or C.yellow)
+        rr(ox + 34, ry + 24, 62, 16, 3, pc)
+
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.printf(c.plan, ox + 34, ry + 27, 62, "center")
+
+        -- Weight/health
+        setColor(C.gray)
+        love.graphics.setFont(G.fonts.small)
+        local info = (c.peso ~= "" and c.peso .. "kg" or "—") .. "  " .. (c.estado_salud or "")
+        love.graphics.print(info, ox + 190, ry + 5)
+
+        -- Expiry
+        if c.expiry then
+            local d = os.date("*t", c.expiry)
+            setColor(act and C.gray or C.red)
+            love.graphics.print(dateStr(d), ox + 190, ry + 22)
+        end
+
+        -- Status text
+        setColor(act and C.green or C.red)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.print(act and "Activo" or "Vencido", ox + chart_w - 90, ry + 18)
+
+        ::cont::
+    end
+    love.graphics.setScissor()
+end
+
+-- ============= PANTALLA: REGISTRO =============
+local function drawRegistro()
+    local ox, oy = SIDEBAR_W + 18, HEADER_H + 8
+    local aw = W - SIDEBAR_W - 30
+
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.large)
+    love.graphics.print("REGISTRO DE NUEVO CLIENTE", ox, oy + 4)
+    
+    setColor(C.yellow)
+    love.graphics.setFont(G.fonts.normal)
+    love.graphics.print(string.format("Cliente #%04d", G.next_id), ox + 6, oy + 38)
+
+    local form_w = aw - 215
+    local form_y = oy + 64
+    local form_h = H - form_y - 50
+
+    rr(ox, form_y, form_w, form_h, 8, C.card)
+
+    local fx = ox + 14
+    local fw = form_w - 28
+
+    -- Personal data
+    setColor(C.gray)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("DATOS PERSONALES", fx, form_y + 14)
+
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("Nombres", fx, form_y + 38)
+    drawInput(fx, form_y + 52, fw, 34, "nombres", "Nombres completos...")
+
+    love.graphics.print("Apellidos", fx, form_y + 100)
+    drawInput(fx, form_y + 114, fw, 34, "apellidos", "Apellidos...")
+
+    love.graphics.print("Teléfono", fx, form_y + 162)
+    drawInput(fx, form_y + 176, fw, 34, "telefono", "+57 300 000 0000...")
+
+    love.graphics.print("Estado de Salud", fx, form_y + 224)
+    drawInput(fx, form_y + 238, fw / 2 - 6, 34, "estado_salud", "Condición física...")
+    
+    love.graphics.print("Peso (kg)", fx + fw / 2 + 6, form_y + 224)
+    drawInput(fx + fw / 2 + 6, form_y + 238, fw / 2 - 6, 34, "peso", "70")
+
+    -- Membership data
+    setColor(C.gray)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("DATOS DE LA MEMBRESÍA", fx, form_y + 292)
+
+    local sel_plan = G.text_inputs["plan"] or "Mensual"
+    local pw = fw / 3 - 6
+    
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("Plan", fx, form_y + 315)
+    
+    for i, p in ipairs(PLAN_OPTIONS) do
+        local px = fx + (i - 1) * (pw + 8)
+        local active = sel_plan == p
+        
+        rr(px, form_y + 330, pw, 50, 6, active and C.sidebar_sel or C.card2)
+        
+        setColor(active and C.white or C.gray)
+        love.graphics.setFont(G.fonts.normal)
+        love.graphics.printf(p, px, form_y + 338, pw, "center")
+        
+        setColor(active and C.cyan or C.dim)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.printf(string.format("$%d", PLAN_PRICES[p] or 0), px, form_y + 360, pw, "center")
+    end
+
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("Tipo de Pago", fx, form_y + 394)
+    drawDropdown(fx, form_y + 408, fw, 34, "tipo_pago", PAGO_OPTIONS)
+
+    -- Buttons
+    local btn_y = form_y + form_h - 52
+    local c_hov = hover(ox + form_w - 270, btn_y, 120, 38)
+    local s_hov = hover(ox + form_w - 140, btn_y, 125, 38)
+    
+    drawButton(ox + form_w - 270, btn_y, 120, 38, "CANCELAR", C.btn_cancel, C.white, G.fonts.normal, 6, c_hov)
+    drawButton(ox + form_w - 140, btn_y, 125, 38, "✓ GUARDAR", C.btn_green, C.white, G.fonts.normal, 6, s_hov)
+
+    -- Photo panel
+    local px2 = ox + form_w + 10
+    local py2 = form_y
+    local pw2 = 205
+    local ph2 = 200
+    
+    rr(px2, py2, pw2, ph2, 8, C.card)
+    
+    setColor(C.gray)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("PERFIL Y FOTO", px2 + 10, py2 + 12)
+    
+    rr(px2 + 12, py2 + 32, pw2 - 24, 130, 4, C.card2)
+    setColor(C.border)
+    rrLine(px2 + 12, py2 + 32, pw2 - 24, 130, 4)
+    
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.large)
+    love.graphics.printf("👤", px2 + 12, py2 + 72, pw2 - 24, "center")
+    
+    local up_hov = hover(px2 + 12, py2 + 170, pw2 - 24, 30)
+    drawButton(px2 + 12, py2 + 170, pw2 - 24, 30, "📷 Subir Foto", C.sidebar_sel, C.white, G.fonts.small, 5, up_hov)
+
+    -- Requirements
+    local req_y = py2 + ph2 + 8
+    rr(px2, req_y, pw2, 120, 8, C.card)
+    
+    setColor(C.gray)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("REQUISITOS", px2 + 10, req_y + 10)
+    
+    local reqs = {"Examen Médico", "Contrato Firmado", "Términos Aceptados"}
+    for i, req in ipairs(reqs) do
+        local ry2 = req_y + 28 + (i - 1) * 26
+        
+        setColor(C.dim)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.print(req, px2 + 10, ry2)
+        
+        setColor(C.dim)
+        love.graphics.print("✗ Pendiente", px2 + 125, ry2)
+    end
+
+    -- Recent clients table
+    local rec_y = form_y + form_h + 5
+    local rec_h = H - rec_y - 8
+    
+    if rec_h < 50 then return end
+    
+    rr(ox, rec_y, form_w, rec_h, 8, C.card)
+    
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.normal)
+    love.graphics.print("CLIENTES RECIENTES", ox + 12, rec_y + 9)
+
+    local cols = {ox + 10, ox + 65, ox + 240, ox + 410, ox + 560, ox + 650}
+    local hdrs = {"ID", "Nombre", "Plan", "Fecha Reg.", "Estado", "Acciones"}
+    
+    setColor(C.gray)
+    love.graphics.setFont(G.fonts.small)
+    for i, h in ipairs(hdrs) do 
+        love.graphics.print(h, cols[i], rec_y + 32) 
+    end
+    
+    setColor(C.border)
+    love.graphics.setLineWidth(0.5)
+    love.graphics.line(ox + 6, rec_y + 48, ox + form_w - 6, rec_y + 48)
+    love.graphics.setLineWidth(1)
+
+    local start = math.max(1, #G.clients - 5)
+    local ri = 0
+    
+    for i = #G.clients, start, -1 do
+        local c = G.clients[i]
+        local ry3 = rec_y + 52 + ri * 28
+        
+        if ry3 + 22 > rec_y + rec_h then break end
+        
+        local act = isActive(c)
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.small)
+        
+        setColor(C.yellow)
+        love.graphics.print(string.format("#%04d", c.id), cols[1], ry3)
+        
+        setColor(C.white)
+        love.graphics.print(c.nombres .. " " .. c.apellidos, cols[2], ry3)
+        love.graphics.print(c.plan, cols[3], ry3)
+        
+        if c.start_ts then
+            local d = os.date("*t", c.start_ts)
+            love.graphics.print(dateStr(d), cols[4], ry3)
+        end
+        
+        setColor(act and C.green or C.red)
+        love.graphics.circle("fill", cols[5] + 5, ry3 + 7, 4)
+        
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.print(act and "Activo" or "Vencido", cols[5] + 12, ry3 + 3)
+        
+        ri = ri + 1
+    end
+end
+
+-- ============= PANTALLA: CLIENTES =============
+local function drawClientes()
+    local ox, oy = SIDEBAR_W + 15, HEADER_H + 8
+    local aw = W - SIDEBAR_W - 25
+
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.large)
+    love.graphics.print("GESTIÓN DE CLIENTES", ox, oy + 4)
+
+    -- Search
+    drawInput(ox + aw - 260, oy + 2, 245, 33, "cl_search", "🔍 Buscar cliente...")
+
+    -- New client button
+    local nc_hov = hover(ox + aw - 390, oy + 2, 120, 33)
+    drawButton(ox + aw - 390, oy + 2, 120, 33, "+ Nuevo", C.btn_green, C.white, G.fonts.normal, 5, nc_hov)
+
+    -- Filter tabs
+    local tab_y = oy + 44
+    local filters = {"Todos", "Activos", "Vencidos"}
+    local fkeys   = {"todos", "activos", "vencidos"}
+    
+    for i, f in ipairs(filters) do
+        local tx = ox + (i - 1) * 100
+        local active = G.cl_filter == fkeys[i]
+        
+        rr(tx, tab_y, 95, 28, 5, active and C.sidebar_sel or C.card)
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.printf(f, tx, tab_y + 7, 95, "center")
+    end
+
+    -- Table
+    local ty = tab_y + 36
+    local th = H - ty - 10
+    rr(ox, ty, aw, th, 8, C.card)
+
+    local cols = {ox + 8, ox + 52, ox + 102, ox + 320, ox + 420, ox + 570, ox + 715, ox + 800}
+    local hdrs = {"#", "Foto", "Nombre", "Plan", "Peso/Salud", "Vencimiento", "Estado", "Acciones"}
+    
+    setColor(C.gray)
+    love.graphics.setFont(G.fonts.small)
+    for i, h in ipairs(hdrs) do 
+        love.graphics.print(h, cols[i], ty + 10) 
+    end
+    
+    setColor(C.border)
+    love.graphics.setLineWidth(0.5)
+    love.graphics.line(ox + 4, ty + 28, ox + aw - 4, ty + 28)
+    love.graphics.setLineWidth(1)
+
+    -- Filter + sort
+    local sv = (G.text_inputs["cl_search"] or ""):lower()
+    local filtered = {}
+    
+    for _, c in ipairs(G.clients) do
+        local act = isActive(c)
+        local mf = G.cl_filter == "todos" or (G.cl_filter == "activos" and act) or (G.cl_filter == "vencidos" and not act)
+        local ms = sv == "" or (c.nombres .. " " .. c.apellidos):lower():find(sv, 1, true)
+        if mf and ms then 
+            table.insert(filtered, c) 
+        end
+    end
+    
+    table.sort(filtered, function(a, b)
+        return (isActive(a) and 1 or 0) > (isActive(b) and 1 or 0)
+    end)
+
+    local rh = 54
+    local sc = G.scroll.clientes or 0
+    love.graphics.setScissor(ox + 2, ty + 30, aw - 4, th - 34)
+    
+    for i, c in ipairs(filtered) do
+        local ry = ty + 32 + (i - 1) * rh - sc
+        if ry + rh < ty + 32 then goto cont2 end
+        if ry > ty + th then break end
+        
+        local act = isActive(c)
+        setColor(act and (i % 2 == 0 and C.row_b or C.row_a) or C.row_red)
+        love.graphics.rectangle("fill", ox + 4, ry, aw - 8, rh - 2, 4, 4)
+
+        -- ID
+        setColor(C.yellow)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.print(string.format("#%04d", c.id), cols[1], ry + 18)
+        
+        -- Photo circle
+        setColor(C.card2)
+        love.graphics.circle("fill", cols[2] + 20, ry + 24, 20)
+        setColor(C.dim)
+        love.graphics.circle("line", cols[2] + 20, ry + 24, 20)
+        love.graphics.setFont(G.fonts.normal)
+        love.graphics.printf("👤", cols[2] + 5, ry + 14, 30, "center")
+        
+        -- Name
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.normal)
+        love.graphics.print(c.nombres .. " " .. c.apellidos, cols[3], ry + 7)
+        setColor(C.gray)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.print(c.telefono or "", cols[3], ry + 28)
+        
+        -- Plan badge
+        local pc = c.plan == "Mensual" and C.blue or (c.plan == "Semanal" and C.cyan or C.yellow)
+        rr(cols[4], ry + 14, 78, 20, 4, pc)
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.printf(c.plan, cols[4], ry + 17, 78, "center")
+        
+        -- Health
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.print((c.peso ~= "" and c.peso .. "kg" or "—"), cols[5], ry + 7)
+        setColor(C.gray)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.print(c.estado_salud or "", cols[5], ry + 27)
+        
+        -- Expiry
+        if c.expiry then
+            local d = os.date("*t", c.expiry)
+            local dl = math.floor((c.expiry - os.time()) / 86400)
+            
+            setColor(act and (dl <= 3 and C.yellow or C.white) or C.red)
+            love.graphics.setFont(G.fonts.small)
+            love.graphics.print(dateStr(d), cols[6], ry + 7)
+            
+            love.graphics.setFont(G.fonts.tiny)
+            setColor(act and (dl <= 3 and C.yellow or C.gray) or C.red)
+            love.graphics.print(act and dl .. " días" or "VENCIDO", cols[6], ry + 27)
+        end
+        
+        -- Status
+        setColor(act and C.green or C.red)
+        love.graphics.circle("fill", cols[7] + 8, ry + 16, 6)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.print(act and "Activo" or "Vencido", cols[7] + 17, ry + 11)
+        
+        -- Buttons
+        local r1h = hover(cols[8], ry + 6, 60, 20)
+        local r2h = hover(cols[8] + 65, ry + 6, 28, 20)
+        local r3h = hover(cols[8] + 98, ry + 6, 28, 20)
+        
+        drawButton(cols[8],      ry + 6, 60, 20, "Renovar", C.btn_green,    C.white, G.fonts.tiny, 4, r1h)
+        drawButton(cols[8] + 65, ry + 6, 28, 20, "✏",       C.sidebar_sel,  C.white, G.fonts.tiny, 4, r2h)
+        drawButton(cols[8] + 98, ry + 6, 28, 20, "🗑",       {0.55, 0.1, 0.1}, C.white, G.fonts.tiny, 4, r3h)
+        
+        ::cont2::
+    end
+    love.graphics.setScissor()
+
+    -- Row count
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.tiny)
+    love.graphics.print(string.format("%d cliente(s) mostrado(s)", #filtered), ox + 10, ty + th - 16)
+end
+
+-- ============= PANTALLA: AGENDA =============
+local function getWeekStart(offset)
+    local now = os.date("*t")
+    local ts = os.time(now)
+    local wd = now.wday - 2
+    if wd < 0 then wd = wd + 7 end
+    return ts - wd * 86400 + offset * 7 * 86400
+end
+
+local function drawAgenda()
+    local ox, oy = SIDEBAR_W + 12, HEADER_H + 8
+    local aw = W - SIDEBAR_W - 20
+
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.large)
+    love.graphics.print("PANEL DE ANOTACIONES", ox, oy + 4)
+
+    drawInput(ox + aw - 250, oy + 2, 235, 32, "ag_search", "🔍 Buscar anotaciones...")
+
+    -- View selector
+    local views = {"Día", "Semana", "Mes"}
+    local vkeys = {"dia", "semana", "mes"}
+    
+    for i, v in ipairs(views) do
+        local vx = ox + (i - 1) * 78
+        local active = G.ag_view == vkeys[i]
+        
+        rr(vx, oy + 42, 73, 26, 5, active and C.blue or C.card)
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.printf(v, vx, oy + 49, 73, "center")
+    end
+
+    -- Week nav
+    local ws = getWeekStart(G.ag_week_off)
+    local we = ws + 6 * 86400
+    local wsd = os.date("*t", ws)
+    local wed = os.date("*t", we)
+    
+    local nav_cx = ox + aw / 2
+    local nh_hov1 = hover(nav_cx - 140, oy + 42, 30, 26)
+    local nh_hov2 = hover(nav_cx + 112, oy + 42, 30, 26)
+    
+    drawButton(nav_cx - 140, oy + 42, 30, 26, "◀", C.card, C.white, G.fonts.normal, 4, nh_hov1)
+    drawButton(nav_cx + 112, oy + 42, 30, 26, "▶", C.card, C.white, G.fonts.normal, 4, nh_hov2)
+    
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.normal)
+    local wstr = string.format("%s %d – %s %d, %d",
+        MONTH_NAMES[wsd.month]:sub(1, 3), wsd.day,
+        MONTH_NAMES[wed.month]:sub(1, 3), wed.day, wed.year)
+    love.graphics.printf(wstr, nav_cx - 108, oy + 48, 218, "center")
+
+    -- New note button
+    local nn_hov = hover(ox + aw - 140, oy + 42, 130, 26)
+    drawButton(ox + aw - 140, oy + 42, 130, 26, "+ Nueva Nota", C.btn_green, C.white, G.fonts.small, 5, nn_hov)
+
+    -- Grid
+    local gx, gy = ox, oy + 78
+    local gw, gh = aw, H - gy - 90
+    rr(gx, gy, gw, gh, 6, C.card)
+
+    local hcw = 52
+    local dcw = (gw - hcw) / 7
+    local hour_h = 52
+    local hdr_h = 30
+    local n_hours = 12
+
+    -- Day headers
+    local today_d = os.date("*t")
+    for d = 0, 6 do
+        local dx = gx + hcw + d * dcw
+        local dts = ws + d * 86400
+        local dd = os.date("*t", dts)
+        local is_today = dd.year == today_d.year and dd.month == today_d.month and dd.day == today_d.day
+        
+        if is_today then 
+            rr(dx, gy, dcw, hdr_h, 3, C.sidebar_sel) 
+        end
+        
+        setColor(is_today and C.white or C.gray)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.printf(string.format("%s %d", DAY_SHORT[d + 1], dd.day), dx, gy + 9, dcw, "center")
+        
+        setColor(C.border)
+        love.graphics.setLineWidth(0.5)
+        love.graphics.line(dx, gy, dx, gy + gh)
+        love.graphics.setLineWidth(1)
+    end
+
+    -- Hours
+    local sc = G.scroll.agenda or 0
+    love.graphics.setScissor(gx, gy + hdr_h, gw, gh - hdr_h)
+    
+    for h = 0, n_hours do
+        local hour = 8 + h
+        local hy = gy + hdr_h + h * hour_h - sc
+        
+        if hy >= gy + hdr_h - hour_h and hy <= gy + gh then
+            setColor(C.dim)
+            love.graphics.setFont(G.fonts.tiny)
+            love.graphics.printf(string.format("%02d:00", hour), gx, hy + 4, hcw - 4, "right")
+            
+            setColor(C.border)
+            love.graphics.setLineWidth(0.5)
+            love.graphics.line(gx + hcw, hy, gx + gw, hy)
+            love.graphics.setLineWidth(1)
+        end
+    end
+
+    -- Notes
+    for _, note in ipairs(G.notes) do
+        local nx2 = gx + hcw + note.day * dcw + 2
+        local hy = gy + hdr_h + (note.hour - 8) * hour_h + 2 - sc
+        local nw2 = dcw - 4
+        local nh2 = hour_h * (note.duration or 1) - 4
+        
+        if hy >= gy + hdr_h - nh2 and hy <= gy + gh then
+            local nc = NOTE_COLORS[note.color] or C.blue
+            setColor({nc[1], nc[2], nc[3], 0.88})
+            love.graphics.rectangle("fill", nx2, hy, nw2, nh2, 3, 3)
+            
+            setColor(C.white)
+            love.graphics.setFont(G.fonts.tiny)
+            love.graphics.printf(note.text or "", nx2 + 3, hy + 3, nw2 - 6, "left")
+            
+            -- Selected actions
+            if G.ag_selected == note then
+                rr(nx2 + nw2 - 72, hy + 2, 20, 16, 3, C.blue)
+                rr(nx2 + nw2 - 48, hy + 2, 20, 16, 3, C.green)
+                rr(nx2 + nw2 - 24, hy + 2, 20, 16, 3, C.red)
+                
+                setColor(C.white)
+                love.graphics.setFont(G.fonts.tiny)
+                love.graphics.print("✓", nx2 + nw2 - 68, hy + 3)
+                love.graphics.print("✏", nx2 + nw2 - 44, hy + 3)
+                love.graphics.print("✗", nx2 + nw2 - 20, hy + 3)
+            end
+        end
+    end
+    love.graphics.setScissor()
+
+    -- Bottom: Today's activities
+    local by2 = gy + gh + 5
+    local bh2 = H - by2 - 8
+    
+    if bh2 > 28 then
+        rr(gx, by2, gw, bh2, 6, C.card)
+        setColor(C.gray)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.print("ACTIVIDADES DE HOY", gx + 10, by2 + 8)
+
+        local today_wd = today_d.wday - 2
+        if today_wd < 0 then today_wd = today_wd + 7 end
+
+        local cols2 = {gx + 10, gx + 75, gx + 340, gx + 500}
+        local hdrs2 = {"Hora", "Actividad", "Tipo", "Estado"}
+
+        setColor(C.gray)
+        love.graphics.setFont(G.fonts.tiny)
+        for i, h in ipairs(hdrs2) do 
+            love.graphics.print(h, cols2[i], by2 + 26) 
+        end
+
+        local ri = 0
+        for _, n in ipairs(G.notes) do
+            if n.day == today_wd then
+                local ny3 = by2 + 40 + ri * 20
+                if ny3 + 15 > by2 + bh2 then break end
+
+                setColor(C.white)
+                love.graphics.setFont(G.fonts.tiny)
+                love.graphics.print(string.format("%02d:00", n.hour), cols2[1], ny3)
+                love.graphics.print(n.text or "", cols2[2], ny3)
+
+                local nc = NOTE_COLORS[n.color] or C.blue
+                rr(cols2[3] - 2, ny3 - 1, 56, 14, 3, nc)
+
+                setColor(C.white)
+                love.graphics.printf(n.color or "", cols2[3] - 2, ny3 + 1, 56, "center")
+
+                setColor(C.green)
+                love.graphics.circle("fill", cols2[4] + 5, ny3 + 6, 4)
+                love.graphics.print("Activo", cols2[4] + 13, ny3)
+
+                ri = ri + 1
+            end
+        end
+    end
+end
+
+-- ============= PANTALLA: CONFIGURACIÓN =============
+local function drawConfiguracion()
+    local ox, oy = SIDEBAR_W + 15, HEADER_H + 8
+    local aw = W - SIDEBAR_W - 25
+
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.large)
+    love.graphics.print("CONFIGURACIÓN DEL SISTEMA", ox, oy + 4)
+
+    local sc = G.scroll.configuracion or 0
+    local panel_y = oy + 45 - sc
+
+    -- 1. Panel de Precios
+    rr(ox, panel_y, aw, 120, 8, C.card)
+    setColor(C.yellow)
+    love.graphics.setFont(G.fonts.medium)
+    love.graphics.print("💰 Precio de los Planes", ox + 15, panel_y + 12)
+
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("Diario ($)", ox + 15, panel_y + 45)
+    drawInput(ox + 15, panel_y + 65, 100, 34, "price_diario", "5")
+
+    love.graphics.print("Semanal ($)", ox + 135, panel_y + 45)
+    drawInput(ox + 135, panel_y + 65, 100, 34, "price_semanal", "25")
+
+    love.graphics.print("Mensual ($)", ox + 255, panel_y + 45)
+    drawInput(ox + 255, panel_y + 65, 100, 34, "price_mensual", "80")
+
+    local p_hov = hover(ox + 375, panel_y + 65, 120, 34)
+    drawButton(ox + 375, panel_y + 65, 120, 34, "Guardar Precios", C.btn_green, C.white, G.fonts.normal, 5, p_hov)
+
+    -- 2. Panel de Notificaciones
+    local py2 = panel_y + 135
+    rr(ox, py2, aw, 85, 8, C.card)
+    setColor(C.blue)
+    love.graphics.setFont(G.fonts.medium)
+    love.graphics.print("🔔 Preferencias de Alertas", ox + 15, py2 + 12)
+
+    local toggle_lbl = G.notifs_enabled and "ON: Alertas Activadas" or "OFF: Alertas Silenciadas"
+    local n_hov = hover(ox + 15, py2 + 40, 220, 34)
+    drawButton(ox + 15, py2 + 40, 220, 34, toggle_lbl, G.notifs_enabled and C.btn_green or C.row_red, C.white, G.fonts.normal, 5, n_hov)
+
+    -- 3. Panel de Tema / Colores
+    local py3 = py2 + 100
+    rr(ox, py3, aw, 100, 8, C.card)
+    setColor(C.purple)
+    love.graphics.setFont(G.fonts.medium)
+    love.graphics.print("🎨 Tema Visual", ox + 15, py3 + 12)
+
+    local t1_hov = hover(ox + 15, py3 + 45, 150, 34)
+    drawButton(ox + 15, py3 + 45, 150, 34, "Tema Original (Morado)", C.card2, C.white, G.fonts.normal, 5, t1_hov)
+
+    local t2_hov = hover(ox + 180, py3 + 45, 150, 34)
+    drawButton(ox + 180, py3 + 45, 150, 34, "Tema Azul Oscuro", {0.1, 0.2, 0.4}, C.white, G.fonts.normal, 5, t2_hov)
+end
+
+-- ============= PANTALLA: SOPORTE =============
+local function drawSoporte()
+    local ox, oy = SIDEBAR_W + 15, HEADER_H + 8
+    local aw = W - SIDEBAR_W - 25
+
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.large)
+    love.graphics.print("SOPORTE Y DOCUMENTACIÓN", ox, oy + 4)
+
+    local hw = (aw - 12) / 2
+    
+    -- App info
+    rr(ox, oy + 38, hw, 110, 8, C.card)
+    setColor(C.blue)
+    love.graphics.setFont(G.fonts.medium)
+    love.graphics.print("⚡ GymManager v1.0", ox + 12, oy + 50)
+    
+    setColor(C.gray)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("Sistema de Gestión de Gimnasio", ox + 12, oy + 74)
+    love.graphics.print("Desarrollado en Löve2D (Lua)", ox + 12, oy + 92)
+    love.graphics.print("Datos guardados en CSV por mes", ox + 12, oy + 110)
+    
+    setColor(C.green)
+    love.graphics.circle("fill", ox + 20, oy + 138, 5)
+    
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("Sistema operativo normalmente", ox + 30, oy + 132)
+
+    -- System stats
+    rr(ox + hw + 12, oy + 38, hw, 110, 8, C.card)
+    setColor(C.yellow)
+    love.graphics.setFont(G.fonts.normal)
+    love.graphics.print("📊 Estado del Sistema", ox + hw + 24, oy + 50)
+    
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print(string.format("Clientes registrados: %d", #G.clients), ox + hw + 24, oy + 74)
+    love.graphics.print(string.format("Transacciones totales: %d", #G.transactions), ox + hw + 24, oy + 92)
+    love.graphics.print(string.format("Notas de agenda: %d", #G.notes), ox + hw + 24, oy + 110)
+    
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.tiny)
+    love.graphics.print("Dir: " .. love.filesystem.getSaveDirectory(), ox + hw + 24, oy + 130)
+
+    -- Guide
+    local gy = oy + 162
+    local gh = H - gy - 50
+    rr(ox, gy, aw, gh, 8, C.card)
+    
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.medium)
+    love.graphics.print("📖 Guía de Uso", ox + 12, gy + 12)
+
+    local guide = {
+        {"🏠  Inicio",       "Panel principal: estadísticas, gráfica de transacciones (horas/días/meses, click en los botones) y lista de clientes. Clientes en rojo tienen suscripción vencida."},
+        {"📝  Registro",     "Registrar nuevos clientes. Planes: Diario ($5, vence a medianoche o al cerrar caja), Semanal ($25, 7 días), Mensual ($80, 30 días). Guardar crea la transacción automáticamente."},
+        {"👥  Clientes",     "Ver, filtrar (Todos/Activos/Vencidos), buscar y gestionar todos los clientes. Botón 'Renovar' extiende la suscripción desde hoy. Botón 🗑 elimina el cliente."},
+        {"📅  Agenda",       "Panel libre de anotaciones por semana. Crea notas por día y hora con colores (azul, verde, amarillo, rojo). Navega semanas con ◀ ▶. Click en nota para acciones."},
+        {"💰  Cerrar Caja",  "Vence TODAS las membresías diarias activas. Úsalo al cerrar el turno. Confirma la acción en el diálogo emergente."},
+        {"💾  Persistencia", "Todo se guarda automáticamente en CSV: clientes en /data/clientes.csv, transacciones en /transacciones/AÑO-MES/tx.csv, notas en /data/notes.csv."},
+    }
+
+    local row_y = gy + 42
+    love.graphics.setScissor(ox + 4, gy + 35, aw - 8, gh - 35)
+    
+    for _, item in ipairs(guide) do
+        if row_y + 40 > gy + gh then break end
+        
+        setColor(C.cyan)
+        love.graphics.setFont(G.fonts.normal)
+        love.graphics.print(item[1], ox + 12, row_y)
+        
+        setColor(C.gray)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.printf(item[2], ox + 180, row_y + 2, aw - 200, "left")
+        
+        setColor(C.border)
+        love.graphics.setLineWidth(0.5)
+        love.graphics.line(ox + 8, row_y + 28, ox + aw - 8, row_y + 28)
+        love.graphics.setLineWidth(1)
+        
+        row_y = row_y + 36
+    end
+
+    -- Shortcuts
+    if row_y + 50 < gy + gh then
+        setColor(C.yellow)
+        love.graphics.setFont(G.fonts.normal)
+        love.graphics.print("⌨  Atajos de Teclado:", ox + 12, row_y + 8)
+        
+        local sc_list = {"Tab → Siguiente campo", "Escape → Cancelar/Cerrar", "Enter → Confirmar", "F1 → Inicio", "F2 → Nuevo Registro", "F5 → Refrescar"}
+        setColor(C.gray)
+        love.graphics.setFont(G.fonts.small)
+        
+        for i, sc in ipairs(sc_list) do
+            local sx = ox + 12 + (i - 1) % 3 * 210
+            local sy = row_y + 26 + math.floor((i - 1) / 3) * 18
+            if sy < gy + gh - 5 then 
+                love.graphics.print(sc, sx, sy) 
+            end
+        end
+    end
+    love.graphics.setScissor()
+end
+
+-- ============= SIDEBAR + HEADER =============
+local function drawSidebar()
+    local mx, my = love.mouse.getPosition()
+    rr(0, 0, SIDEBAR_W, H, 0, C.sidebar_bg)
+
+    -- Logo
+    rr(10, 10, 36, 36, 6, C.sidebar_sel)
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.large)
+    love.graphics.print("G", 20, 12)
+    
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.medium)
+    love.graphics.print("GymManager", 54, 11)
+    
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.tiny)
+    love.graphics.print("Gestión de Clientes", 54, 30)
+    
+    setColor(C.border)
+    love.graphics.setLineWidth(0.5)
+    love.graphics.line(8, 54, SIDEBAR_W - 8, 54)
+    love.graphics.setLineWidth(1)
+
+    local navItems = {
+        {icon = "🏠", label = "Inicio",   key = "inicio"},
+        {icon = "📝", label = "Registro", key = "registro"},
+        {icon = "👥", label = "Clientes", key = "clientes"},
+        {icon = "📅", label = "Agenda",   key = "agenda"},
+        {icon = "⚙",  label = "Config.",  key = "configuracion"},
+        {icon = "ℹ",  label = "Soporte",  key = "soporte"},
+    }
+    
+    for i, item in ipairs(navItems) do
+        local ny = 62 + (i - 1) * 50
+        local active = G.screen == item.key
+        local hov = mx >= 5 and mx <= SIDEBAR_W - 5 and my >= ny and my <= ny + 42
+        
+        if active then
+            rr(5, ny, SIDEBAR_W - 10, 42, 6, C.sidebar_sel)
+            setColor(C.white)
+            love.graphics.rectangle("fill", SIDEBAR_W - 7, ny + 8, 4, 26, 2, 2)
+        elseif hov then
+            rr(5, ny, SIDEBAR_W - 10, 42, 6, {0.12, 0.14, 0.22})
+        end
+        
+        setColor(active and C.white or C.gray)
+        love.graphics.setFont(G.fonts.normal)
+        love.graphics.print(item.icon .. "  " .. item.label, 18, ny + 13)
+    end
+
+    -- Cerrar Caja
+    local cc_y = H - 62
+    local cc_hov = mx >= 8 and mx <= SIDEBAR_W - 8 and my >= cc_y and my <= cc_y + 48
+    rr(8, cc_y, SIDEBAR_W - 16, 48, 8, cc_hov and {0.65, 0.08, 0.08} or {0.42, 0.05, 0.05})
+    
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.normal)
+    love.graphics.printf("💰 CERRAR CAJA", 8, cc_y + 15, SIDEBAR_W - 16, "center")
+end
+
+local function drawHeader()
+    rr(SIDEBAR_W, 0, W - SIDEBAR_W, HEADER_H, 0, C.header_bg)
+    setColor(C.border)
+    love.graphics.setLineWidth(0.5)
+    love.graphics.line(SIDEBAR_W, HEADER_H, W, HEADER_H)
+    love.graphics.setLineWidth(1)
+
+    local names = {inicio = "Inicio", registro = "Registro", clientes = "Clientes", agenda = "Agenda", configuracion = "Configuración", soporte = "Soporte"}
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("GymManager", SIDEBAR_W + 14, 8)
+    
+    setColor(C.gray)
+    love.graphics.print(" › ", SIDEBAR_W + 86, 8)
+    
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.normal)
+    love.graphics.print(names[G.screen] or G.screen, SIDEBAR_W + 108, 5)
+
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print(G.date_str .. "   " .. G.time_str, SIDEBAR_W + 14, 30)
+
+    setColor(C.gray)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("🔔  Admin  |  Cerrar Sesión", W - 185, 18)
+    
+    if #G.notifs > 0 then
+        setColor(C.red)
+        love.graphics.circle("fill", W - 194, 13, 7)
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.print(tostring(math.min(#G.notifs, 9)), W - 198, 8)
+    end
+end
+
+-- ============= DIALOGS =============
+local function drawConfirmDialog()
+    local mx, my = love.mouse.getPosition()
+    setColor({0, 0, 0}, 0.62)
+    love.graphics.rectangle("fill", 0, 0, W, H)
+    
+    local dw, dh = 420, 190
+    local dx, dy = (W - dw) / 2, (H - dh) / 2
+    
+    rr(dx, dy, dw, dh, 10, C.card)
+    setColor(C.border)
+    rrLine(dx, dy, dw, dh, 10)
+    
+    setColor(C.yellow)
+    love.graphics.setFont(G.fonts.large)
+    love.graphics.printf("⚠  CERRAR CAJA", dx, dy + 18, dw, "center")
+    
+    setColor(C.gray)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.printf("Esto vencerá TODAS las membresías diarias activas.\n¿Desea continuar?", dx + 20, dy + 55, dw - 40, "center")
+    
+    local c_h = hover(dx + 45, dy + 130, 130, 38)
+    local ok_h = hover(dx + 245, dy + 130, 130, 38)
+    
+    drawButton(dx + 45,  dy + 130, 130, 38, "Cancelar", C.btn_cancel, C.white, G.fonts.normal, 6, c_h)
+    drawButton(dx + 245, dy + 130, 130, 38, "✓ Confirmar", {0.65, 0.08, 0.08}, C.white, G.fonts.normal, 6, ok_h)
+end
+
+local function drawNewNoteDialog()
+    local mx, my = love.mouse.getPosition()
+    setColor({0, 0, 0}, 0.62)
+    love.graphics.rectangle("fill", 0, 0, W, H)
+    
+    local dw, dh = 460, 290
+    local dx, dy = (W - dw) / 2, (H - dh) / 2
+    
+    rr(dx, dy, dw, dh, 10, C.card)
+    setColor(C.border)
+    rrLine(dx, dy, dw, dh, 10)
+    
+    setColor(C.white)
+    love.graphics.setFont(G.fonts.medium)
+    love.graphics.print("📅  Nueva Anotación", dx + 14, dy + 14)
+    
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("Texto:", dx + 14, dy + 50)
+    drawInput(dx + 14, dy + 65, dw - 28, 34, "new_note_text", "Escribir la anotación...")
+    
+    love.graphics.print("Día:", dx + 14, dy + 114)
+    
+    for d = 0, 6 do
+        local bx2 = dx + 14 + d * 57
+        local active = (G.new_note_day or 0) == d
+        
+        rr(bx2, dy + 130, 52, 24, 4, active and C.sidebar_sel or C.card2)
+        setColor(C.white)
+        love.graphics.setFont(G.fonts.tiny)
+        love.graphics.printf(DAY_SHORT[d + 1], bx2, dy + 136, 52, "center")
+    end
+    
+    love.graphics.setFont(G.fonts.small)
+    love.graphics.print("Hora:", dx + 14, dy + 170)
+    drawInput(dx + 60, dy + 165, 58, 28, "new_note_hour", "8")
+    
+    love.graphics.print("Color:", dx + 140, dy + 170)
+    local nc_list = {"blue", "green", "yellow", "red"}
+    for i, nc in ipairs(nc_list) do
+        local cbx = dx + 200 + (i - 1) * 38
+        setColor(NOTE_COLORS[nc])
+        love.graphics.circle("fill", cbx + 12, dy + 179, 10)
+        
+        if (G.new_note_color or "blue") == nc then
+            setColor(C.white)
+            love.graphics.setLineWidth(2)
+            love.graphics.circle("line", cbx + 12, dy + 179, 13)
+            love.graphics.setLineWidth(1)
+        end
+    end
+    
+    local c_h = hover(dx + dw - 270, dy + dh - 52, 120, 38)
+    local s_h = hover(dx + dw - 138, dy + dh - 52, 122, 38)
+    
+    drawButton(dx + dw - 270, dy + dh - 52, 120, 38, "Cancelar", C.btn_cancel, C.white, G.fonts.normal, 6, c_h)
+    drawButton(dx + dw - 138, dy + dh - 52, 122, 38, "✓ Guardar",  C.btn_green,  C.white, G.fonts.normal, 6, s_h)
+end
+
+-- ============= LOVE CALLBACKS =============
+function love.load()
+    W, H = love.graphics.getDimensions()
+    love.window.setMode(W, H, {resizable = true, minwidth = 1100, minheight = 620})
+    love.window.setTitle("GymManager — Sistema de Gestión de Gimnasio")
+
+    G.fonts.tiny   = love.graphics.newFont(11)
+    G.fonts.small  = love.graphics.newFont(13)
+    G.fonts.normal = love.graphics.newFont(14)
+    G.fonts.medium = love.graphics.newFont(17)
+    G.fonts.large  = love.graphics.newFont(21)
+
+    G.text_inputs = {
+        nombres = "",
+        apellidos = "",
+        telefono = "",
+        plan = "Mensual",
+        tipo_pago = "Efectivo",
+        estado_salud = "",
+        peso = "",
+        cl_search = "",
+        ag_search = "",
+        new_note_text = "",
+        new_note_hour = "8",
+        price_diario = tostring(PLAN_PRICES["Diario"]),
+        price_semanal = tostring(PLAN_PRICES["Semanal"]),
+        price_mensual = tostring(PLAN_PRICES["Mensual"]),
+    }
+    
+    G.cl_filter      = "todos"
+    G.ag_view        = "semana"
+    G.new_note_day   = 0
+    G.new_note_color = "blue"
+
+    loadClients()
+    loadTx()
+    loadNotes()
+
+    addNotif("✅ Sistema iniciado correctamente")
+    addNotif("👋 Bienvenido a GymManager v1.0")
+
+    -- Expiry warnings
+    for _, c in ipairs(G.clients) do
+        if c.expiry then
+            local dl = (c.expiry - os.time()) / 86400
+            if dl > 0 and dl <= 3 then
+                addNotif(string.format("⚠ %s %s vence en %d día(s)", c.nombres, c.apellidos, math.ceil(dl)))
+            end
+        end
+    end
+end
+
+function love.update(dt)
+    G.dt = G.dt + dt
+    local d = os.date("*t")
+    G.time_str = string.format("%02d:%02d:%02d", d.hour, d.min, d.sec)
+    G.date_str = dateStr(d)
+    W, H = love.graphics.getDimensions()
+end
+
+function love.draw()
+    setColor(C.bg)
+    love.graphics.rectangle("fill", 0, 0, W, H)
+
+    drawSidebar()
+    drawHeader()
+
+    if G.screen == "inicio" then 
+        drawInicio()
+    elseif G.screen == "registro" then 
+        drawRegistro()
+    elseif G.screen == "clientes" then 
+        drawClientes()
+    elseif G.screen == "agenda" then 
+        drawAgenda()
+    elseif G.screen == "configuracion" then 
+        drawConfiguracion()
+    elseif G.screen == "soporte" then 
+        drawSoporte()
+    end
+
+    if G.show_confirm then 
+        drawConfirmDialog()  
+    end
+    
+    if G.show_new_note then 
+        drawNewNoteDialog()   
+    end
+
+    -- FPS
+    setColor(C.dim)
+    love.graphics.setFont(G.fonts.tiny)
+    love.graphics.print(string.format("FPS:%d", love.timer.getFPS()), W - 44, H - 14)
+end
+
+function love.textinput(t)
+    if G.focus then
+        G.text_inputs[G.focus] = (G.text_inputs[G.focus] or "") .. t
+    end
+end
+
+function love.keypressed(key)
+    if key == "backspace" and G.focus then
+        local s = G.text_inputs[G.focus] or ""
+        if #s > 0 then
+            local off = utf8.offset(s, -1)
+            if off then 
+                G.text_inputs[G.focus] = s:sub(1, off - 1) 
+            end
+        end
+    elseif key == "escape" then
+        if G.show_confirm then 
+            G.show_confirm = false
+        elseif G.show_new_note then 
+            G.show_new_note = false
+        elseif G.dropdown then 
+            G.dropdown = nil
+        else 
+            G.focus = nil 
+        end
+    elseif key == "return" or key == "kpenter" then
+        if G.show_confirm then 
+            cerrarCaja()
+        elseif G.show_new_note then
+            local hr = clamp(tonumber(G.text_inputs["new_note_hour"]) or 8, 8, 20)
+            table.insert(G.notes, {
+                day = G.new_note_day or 0,
+                hour = hr,
+                text = G.text_inputs["new_note_text"] or "",
+                color = G.new_note_color or "blue",
+                duration = 1
+            })
+            saveNotes()
+            G.show_new_note = false
+            G.text_inputs["new_note_text"] = ""
+            addNotif("📅 Nota añadida a la agenda")
+        end
+    elseif key == "tab" then
+        local fields = {"nombres", "apellidos", "telefono", "estado_salud", "peso"}
+        for i, f in ipairs(fields) do
+            if G.focus == f then 
+                G.focus = fields[i % #fields + 1]
+                return 
+            end
+        end
+    elseif key == "f1" then 
+        G.screen = "inicio"
+    elseif key == "f2" then 
+        G.screen = "registro"
+    elseif key == "f5" then 
+        loadClients()
+        loadTx()
+        loadNotes()
+        addNotif("🔄 Datos recargados")
+    end
+end
+
+function love.mousepressed(x, y, btn)
+    if btn ~= 1 then return end
+    local mx, my = x, y
+
+    -- Dialogs take priority
+    if G.show_confirm then
+        local dw, dh = 420, 190
+        local dx, dy = (W - dw) / 2, (H - dh) / 2
+        
+        if hover(dx + 45, dy + 130, 130, 38) then 
+            G.show_confirm = false
+            return 
+        end
+        if hover(dx + 245, dy + 130, 130, 38) then 
+            cerrarCaja()
+            return 
+        end
+        return
+    end
+
+    if G.show_new_note then
+        local dw, dh = 460, 290
+        local dx, dy = (W - dw) / 2, (H - dh) / 2
+        
+        -- Day buttons
+        for d = 0, 6 do
+            if hover(dx + 14 + d * 57, dy + 130, 52, 24) then 
+                G.new_note_day = d 
+            end
+        end
+        
+        -- Color buttons
+        local nc_list = {"blue", "green", "yellow", "red"}
+        for i, nc in ipairs(nc_list) do
+            if hover(dx + 200 + (i - 1) * 38, dy + 168, 28, 24) then 
+                G.new_note_color = nc 
+            end
+        end
+        
+        -- Inputs
+        if hover(dx + 14, dy + 65, dw - 28, 34) then 
+            G.focus = "new_note_text"
+        elseif hover(dx + 60, dy + 165, 58, 28) then 
+            G.focus = "new_note_hour"
+        else 
+            G.focus = nil 
+        end
+        
+        -- Buttons
+        if hover(dx + dw - 270, dy + dh - 52, 120, 38) then
+            G.show_new_note = false
+        elseif hover(dx + dw - 138, dy + dh - 52, 122, 38) then
+            local hr = clamp(tonumber(G.text_inputs["new_note_hour"]) or 8, 8, 20)
+            table.insert(G.notes, {
+                day = G.new_note_day or 0,
+                hour = hr,
+                text = G.text_inputs["new_note_text"] or "",
+                color = G.new_note_color or "blue",
+                duration = 1
+            })
+            saveNotes()
+            G.show_new_note = false
+            G.text_inputs["new_note_text"] = ""
+            addNotif("📅 Nota añadida a la agenda")
+        end
+        return
+    end
+
+    -- Sidebar navigation
+    local navKeys = {"inicio", "registro", "clientes", "agenda", "configuracion", "soporte"}
+    for i, key in ipairs(navKeys) do
+        local ny = 62 + (i - 1) * 50
+        if mx >= 5 and mx <= SIDEBAR_W - 5 and my >= ny and my <= ny + 42 then
+            G.screen = key
+            G.focus = nil
+            G.dropdown = nil
+            return
+        end
+    end
+    
+    -- Cerrar Caja
+    if mx >= 8 and mx <= SIDEBAR_W - 8 and my >= H - 62 and my <= H - 14 then
+        G.show_confirm = true
+        return
+    end
+
+    -- Screen-specific
+    if G.screen == "registro" then
+        local ox, oy2 = SIDEBAR_W + 18, HEADER_H + 8
+        local aw2 = W - SIDEBAR_W - 30
+        local fw2 = aw2 - 215 - 28
+        local form_y2 = oy2 + 64
+        local fx2 = ox + 14
+
+        G.dropdown = nil
+        G.focus = nil
+
+        -- Text inputs
+        local inputs = {
+            {key = "nombres",      x = fx2,             y = form_y2 + 52,  w = fw2,       h = 34},
+            {key = "apellidos",    x = fx2,             y = form_y2 + 114, w = fw2,       h = 34},
+            {key = "telefono",     x = fx2,             y = form_y2 + 176, w = fw2,       h = 34},
+            {key = "estado_salud", x = fx2,             y = form_y2 + 238, w = fw2 / 2 - 6,   h = 34},
+            {key = "peso",         x = fx2 + fw2 / 2 + 6, y = form_y2 + 238, w = fw2 / 2 - 6,   h = 34},
+        }
+        for _, inp in ipairs(inputs) do
+            if hover(inp.x, inp.y, inp.w, inp.h) then 
+                G.focus = inp.key 
+            end
+        end
+
+        -- Plan buttons
+        local pw = fw2 / 3 - 6
+        for i, p in ipairs(PLAN_OPTIONS) do
+            if hover(fx2 + (i - 1) * (pw + 8), form_y2 + 330, pw, 50) then
+                G.text_inputs["plan"] = p
+            end
+        end
+
+        -- Tipo pago dropdown
+        if hover(fx2, form_y2 + 408, fw2, 34) then
+            G.dropdown = G.dropdown == "tipo_pago" and nil or "tipo_pago"
+        elseif G.dropdown == "tipo_pago" then
+            local ddy = form_y2 + 408 + 34 + 2
+            for i, opt in ipairs(PAGO_OPTIONS) do
+                if hover(fx2 + 2, ddy + 4 + (i - 1) * 30, fw2 - 4, 28) then
+                    G.text_inputs["tipo_pago"] = opt
+                    G.dropdown = nil
+                end
+            end
+        end
+
+        -- Save / Cancel
+        local form_h2 = H - form_y2 - 50
+        local btn_y2 = form_y2 + form_h2 - 52
+        local form_w2 = aw2 - 215
+        
+        if hover(ox + form_w2 - 270, btn_y2, 120, 38) then
+            -- Cancel
+            for _, k in ipairs({"nombres", "apellidos", "telefono", "estado_salud", "peso"}) do
+                G.text_inputs[k] = "" 
+            end
+            G.focus = nil
+
+        elseif hover(ox + form_w2 - 140, btn_y2, 125, 38) then
+            -- Save
+            local n2 = G.text_inputs["nombres"] or ""
+            if n2 ~= "" then
+                local plan2 = G.text_inputs["plan"] or "Mensual"
+                local st = os.time()
+                local c = {
+                    id = G.next_id, 
+                    nombres = n2,
+                    apellidos = G.text_inputs["apellidos"] or "",
+                    telefono = G.text_inputs["telefono"] or "",
+                    plan = plan2, 
+                    start_ts = st,
+                    expiry = subscriptionExpiry(plan2, st),
+                    tipo_pago = G.text_inputs["tipo_pago"] or "Efectivo",
+                    estado_salud = G.text_inputs["estado_salud"] or "",
+                    peso = G.text_inputs["peso"] or "",
+                }
+                
+                G.next_id = G.next_id + 1
+                table.insert(G.clients, c)
+                saveClients()
+                saveTx(PLAN_PRICES[plan2] or 0, plan2, n2 .. " " .. (G.text_inputs["apellidos"] or ""))
+                
+                for _, k in ipairs({"nombres", "apellidos", "telefono", "estado_salud", "peso"}) do
+                    G.text_inputs[k] = "" 
+                end
+                
+                addNotif(string.format("✅ Cliente %s registrado — Plan %s", n2, plan2))
+                G.screen = "clientes"
+            end
+        end
+
+    elseif G.screen == "clientes" then
+        local ox2, oy2 = SIDEBAR_W + 15, HEADER_H + 8
+        local aw2 = W - SIDEBAR_W - 25
+        G.focus = nil
+        G.dropdown = nil
+
+        -- New client button
+        if hover(ox2 + aw2 - 390, oy2 + 2, 120, 33) then
+            G.screen = "registro"
+            return
+        end
+
+        -- Search input
+        if hover(ox2 + aw2 - 260, oy2 + 2, 245, 33) then 
+            G.focus = "cl_search" 
+        end
+
+        -- Filter tabs
+        local fkeys = {"todos", "activos", "vencidos"}
+        for i = 1, 3 do
+            if hover(ox2 + (i - 1) * 100, oy2 + 44, 95, 28) then 
+                G.cl_filter = fkeys[i] 
+            end
+        end
+
+        -- Table rows
+        local ty = oy2 + 44 + 36
+        local cols = {ox2 + 8, ox2 + 52, ox2 + 102, ox2 + 320, ox2 + 420, ox2 + 570, ox2 + 715, ox2 + 800}
+        local sv = (G.text_inputs["cl_search"] or ""):lower()
+        local filtered = {}
+        
+        for _, c in ipairs(G.clients) do
+            local act = isActive(c)
+            local mf = G.cl_filter == "todos" or (G.cl_filter == "activos" and act) or (G.cl_filter == "vencidos" and not act)
+            local ms = sv == "" or (c.nombres .. " " .. c.apellidos):lower():find(sv, 1, true)
+            if mf and ms then 
+                table.insert(filtered, c) 
+            end
+        end
+        
+        table.sort(filtered, function(a, b) 
+            return (isActive(a) and 1 or 0) > (isActive(b) and 1 or 0) 
+        end)
+
+        local rh = 54
+        local sc = G.scroll.clientes or 0
+        
+        for i, c in ipairs(filtered) do
+            local ry = ty + 32 + (i - 1) * rh - sc
+            
+            -- Renew
+            if hover(cols[8], ry + 6, 60, 20) then
+                local st = os.time()
+                c.start_ts = st
+                c.expiry = subscriptionExpiry(c.plan, st)
+                saveClients()
+                saveTx(PLAN_PRICES[c.plan] or 0, c.plan, c.nombres .. " " .. c.apellidos)
+                addNotif(string.format("🔄 Suscripción de %s renovada (%s)", c.nombres, c.plan))
+                return
+            end
+            
+            -- Edit
+            if hover(cols[8] + 65, ry + 6, 28, 20) then
+                addNotif("✏ Edición: usa los campos del botón Renovar para actualizar el plan")
+                return
+            end
+            
+            -- Delete
+            if hover(cols[8] + 98, ry + 6, 28, 20) then
+                local name = c.nombres
+                for j = #G.clients, 1, -1 do
+                    if G.clients[j].id == c.id then 
+                        table.remove(G.clients, j)
+                        break 
+                    end
+                end
+                saveClients()
+                addNotif(string.format("🗑 Cliente %s eliminado", name))
+                return
+            end
+        end
+
+    elseif G.screen == "agenda" then
+        local ox2, oy2 = SIDEBAR_W + 12, HEADER_H + 8
+        local aw2 = W - SIDEBAR_W - 20
+        G.dropdown = nil
+
+        -- Search
+        if hover(ox2 + aw2 - 250, oy2 + 2, 235, 32) then 
+            G.focus = "ag_search"
+        else 
+            G.focus = nil 
+        end
+
+        -- View tabs
+        local vkeys = {"dia", "semana", "mes"}
+        for i = 1, 3 do
+            if hover(ox2 + (i - 1) * 78, oy2 + 42, 73, 26) then 
+                G.ag_view = vkeys[i] 
+            end
+        end
+
+        -- Week nav
+        local nav_cx = ox2 + aw2 / 2
+        if hover(nav_cx - 140, oy2 + 42, 30, 26) then 
+            G.ag_week_off = G.ag_week_off - 1 
+        end
+        if hover(nav_cx + 112, oy2 + 42, 30, 26) then 
+            G.ag_week_off = G.ag_week_off + 1 
+        end
+
+        -- New note
+        if hover(ox2 + aw2 - 140, oy2 + 42, 130, 26) then
+            G.show_new_note = true
+            G.new_note_day = 0
+            G.new_note_color = "blue"
+            G.text_inputs["new_note_text"] = ""
+            G.text_inputs["new_note_hour"] = "8"
+            return
+        end
+
+        -- Note selection
+        local gx2, gy2 = ox2, oy2 + 78
+        local gw2 = aw2
+        local hcw2 = 52
+        local dcw2 = (gw2 - hcw2) / 7
+        local hour_h2 = 52
+        local hdr_h2 = 30
+        local sc = G.scroll.agenda or 0
+
+        G.ag_selected = nil
+        for _, note in ipairs(G.notes) do
+            local nx2 = gx2 + hcw2 + note.day * dcw2 + 2
+            local hy = gy2 + hdr_h2 + (note.hour - 8) * hour_h2 + 2 - sc
+            
+            if hover(nx2, hy, dcw2 - 4, hour_h2 - 4) then
+                G.ag_selected = note
+                -- Delete action button
+                local nw2 = dcw2 - 4
+                if hover(nx2 + nw2 - 24, hy + 2, 20, 16) then
+                    for i = #G.notes, 1, -1 do
+                        if G.notes[i] == note then 
+                            table.remove(G.notes, i)
+                            break 
+                        end
+                    end
+                    saveNotes()
+                    G.ag_selected = nil
+                    addNotif("🗑 Nota eliminada de la agenda")
+                end
+                return
+            end
+        end
+
+    elseif G.screen == "configuracion" then
+        local ox, oy = SIDEBAR_W + 15, HEADER_H + 8
+        local aw = W - SIDEBAR_W - 25
+        local sc = G.scroll.configuracion or 0
+        local panel_y = oy + 45 - sc
+
+        G.focus = nil
+        -- Foco en Text Inputs
+        if hover(ox + 15, panel_y + 65, 100, 34) then G.focus = "price_diario" end
+        if hover(ox + 135, panel_y + 65, 100, 34) then G.focus = "price_semanal" end
+        if hover(ox + 255, panel_y + 65, 100, 34) then G.focus = "price_mensual" end
+
+        -- Botón: Guardar Precios
+        if hover(ox + 375, panel_y + 65, 120, 34) then
+            PLAN_PRICES["Diario"] = tonumber(G.text_inputs["price_diario"]) or PLAN_PRICES["Diario"]
+            PLAN_PRICES["Semanal"] = tonumber(G.text_inputs["price_semanal"]) or PLAN_PRICES["Semanal"]
+            PLAN_PRICES["Mensual"] = tonumber(G.text_inputs["price_mensual"]) or PLAN_PRICES["Mensual"]
+            -- Forzamos mostrar la notificación de éxito habilitando G.notifs_enabled momentáneamente si está apagada
+            local was_enabled = G.notifs_enabled
+            G.notifs_enabled = true
+            addNotif("✅ Precios de planes actualizados")
+            G.notifs_enabled = was_enabled
+            return
+        end
+
+        -- Botón: Toggle Notificaciones
+        local py2 = panel_y + 135
+        if hover(ox + 15, py2 + 40, 220, 34) then
+            G.notifs_enabled = not G.notifs_enabled
+            if G.notifs_enabled then addNotif("🔔 Notificaciones habilitadas nuevamente") end
+            return
+        end
+
+        -- Botones: Temas Visuales
+        local py3 = py2 + 100
+        if hover(ox + 15, py3 + 45, 150, 34) then
+            -- Tema Original
+            C.sidebar_sel = {0.580, 0.320, 1.000}
+            C.border = {0.180, 0.140, 0.300}
+            addNotif("🎨 Tema cambiado a Morado Original")
+            return
+        elseif hover(ox + 180, py3 + 45, 150, 34) then
+            -- Tema Azul
+            C.sidebar_sel = {0.2, 0.5, 1.0}
+            C.border = {0.15, 0.25, 0.45}
+            addNotif("🎨 Tema cambiado a Azul Oscuro")
+            return
+        end
+
+    elseif G.screen == "inicio" then
+        -- Chart mode buttons
+        local ox2, oy2 = SIDEBAR_W + 15, HEADER_H + 10
+        local aw2 = W - SIDEBAR_W - 25
+        local card_y = oy2 + 40
+        local card_h = 80
+        local notif_w = 245
+        local chart_w = aw2 - notif_w - 16
+        local chart_y = card_y + card_h + 12
+        local bw, bh = 68, 24
+        local mkeys = {"horas", "dias", "meses"}
+        
+        for i = 1, 3 do
+            local bx2 = ox2 + chart_w - (4 - i) * (bw + 6) - 14
+            if hover(bx2, chart_y + 9, bw, bh) then 
+                G.chart_mode = mkeys[i]
+                return 
+            end
+        end
+    end
+end
+
+function love.wheelmoved(x, y)
+    if G.show_confirm or G.show_new_note then return end
+    
+    if G.screen == "inicio" then
+        G.scroll.inicio = clamp((G.scroll.inicio or 0) - y * 28, 0, math.max(0, #G.clients * 48 - 160))
+    elseif G.screen == "clientes" then
+        G.scroll.clientes = clamp((G.scroll.clientes or 0) - y * 28, 0, math.max(0, #G.clients * 54 - 200))
+    elseif G.screen == "agenda" then
+        G.scroll.agenda = clamp((G.scroll.agenda or 0) - y * 28, 0, 12 * 52 - 180)
+    elseif G.screen == "configuracion" then -- NUEVO
+        G.scroll.configuracion = clamp((G.scroll.configuracion or 0) - y * 28, 0, 200)
+    elseif G.screen == "soporte" then
+        G.scroll.soporte = clamp((G.scroll.soporte or 0) - y * 28, 0, 500)
+    end
+end
+
+function love.resize(w, h) 
+    W = w
+    H = h 
+end

@@ -54,9 +54,7 @@ local G = {
     text_inputs  = {},
     focus        = nil,
     dropdown     = nil,
-    scroll       = {inicio = 0, inicio_notifs = 0, clientes = 0, agenda = 0, configuracion = 0, soporte = 0, transacciones = 0},
-    scrollbars   = {},
-    scroll_drag  = nil,
+    scroll       = {inicio = 0, clientes = 0, agenda = 0, configuracion = 0, soporte = 0, transacciones = 0},
     settings     = {},
     chart_mode   = "dias",
     ag_view      = "semana",
@@ -538,90 +536,6 @@ local function rrLine(x, y, w, h, r, c, a)
     love.graphics.rectangle("line", x, y, w, h, r or 6, r or 6)
 end
 
-local function scrollMetrics(scroll, content_h, view_h)
-    content_h = math.max(0, tonumber(content_h) or 0)
-    view_h = math.max(0, tonumber(view_h) or 0)
-    local max_scroll = math.max(0, content_h - view_h)
-    scroll = clamp(tonumber(scroll) or 0, 0, max_scroll)
-
-    if max_scroll <= 0 then
-        return scroll, max_scroll, view_h, 0, 0
-    end
-
-    local min_thumb = 28
-    local thumb_h = math.max(min_thumb, math.floor((view_h * view_h) / math.max(content_h, 1)))
-    thumb_h = math.min(thumb_h, view_h)
-    local travel = math.max(1, view_h - thumb_h)
-    local thumb_y = math.floor((scroll / max_scroll) * travel + 0.5)
-    return scroll, max_scroll, thumb_h, thumb_y, travel
-end
-
-local function registerScrollBar(key, x, y, w, h, scroll, content_h)
-    G.scrollbars = G.scrollbars or {}
-    local s, max_scroll, thumb_h, thumb_y = scrollMetrics(scroll, content_h, h)
-    if max_scroll <= 0 then
-        G.scrollbars[key] = nil
-        return nil
-    end
-
-    G.scrollbars[key] = {
-        key = key,
-        x = x, y = y, w = w, h = h,
-        scroll = s,
-        content_h = content_h,
-        max_scroll = max_scroll,
-        thumb_h = thumb_h,
-        thumb_y = thumb_y,
-    }
-
-    rr(x, y, w, h, math.min(4, w / 2), C.border, 0.75)
-    rr(x + 1, y + thumb_y, math.max(1, w - 2), thumb_h, math.min(4, w / 2), C.sidebar_sel, 0.95)
-    return G.scrollbars[key]
-end
-
-local function scrollBarAt(mx, my)
-    if not G.scrollbars then return nil end
-    for _, bar in pairs(G.scrollbars) do
-        if mx >= bar.x and mx <= bar.x + bar.w and my >= bar.y and my <= bar.y + bar.h then
-            return bar
-        end
-    end
-end
-
-local function setScrollValue(key, value)
-    G.scroll = G.scroll or {}
-    G.scroll[key] = value
-end
-
-local function startScrollDrag(bar, mx, my)
-    if not bar or bar.max_scroll <= 0 then return end
-    local rel = clamp(my - bar.y - (bar.thumb_h / 2), 0, math.max(0, bar.h - bar.thumb_h))
-    local ratio = (bar.h - bar.thumb_h) > 0 and (rel / (bar.h - bar.thumb_h)) or 0
-    local new_scroll = math.floor(ratio * bar.max_scroll + 0.5)
-    setScrollValue(bar.key, new_scroll)
-    G.scroll_drag = {
-        key = bar.key,
-        bar = bar,
-        grab = my - (bar.y + bar.thumb_y),
-    }
-end
-
-local function updateScrollDrag(mx, my)
-    local drag = G.scroll_drag
-    if not drag or not drag.bar then return end
-    local bar = drag.bar
-    if bar.max_scroll <= 0 then return end
-    local travel = math.max(1, bar.h - bar.thumb_h)
-    local rel = clamp(my - bar.y - drag.grab, 0, travel)
-    local ratio = travel > 0 and (rel / travel) or 0
-    setScrollValue(bar.key, math.floor(ratio * bar.max_scroll + 0.5))
-end
-
-local function stopScrollDrag()
-    G.scroll_drag = nil
-end
-
-
 local function hover(x, y, w, h)
     local mx, my = love.mouse.getPosition()
     return mx >= x and mx <= x + w and my >= y and my <= y + h
@@ -1083,28 +997,6 @@ local function addNotif(msg)
     while #G.notifs > limit do
         table.remove(G.notifs)
     end
-end
-
-local function runLocalUpdateBat()
-    if love.system and love.system.getOS and love.system.getOS() ~= "Windows" then
-        addNotif("⚠ El actualizador .bat solo funciona en Windows")
-        return
-    end
-
-    local sep = package.config:sub(1, 1)
-    local save_dir = love.filesystem.getSaveDirectory()
-    local bat_path = save_dir .. sep .. "update.bat"
-
-    local f = io.open(bat_path, "r")
-    if not f then
-        addNotif("⚠ No se encontró update.bat en la carpeta de guardado")
-        return
-    end
-    f:close()
-
-    local cmd = string.format('cmd /c start "" "%s"', bat_path)
-    os.execute(cmd)
-    love.event.quit()
 end
 
 -- ============= CSV / PERSISTENCIA =============
@@ -1584,7 +1476,7 @@ local function saveNewNoteFromModal()
     saveNotes()
     G.show_new_note = false
     G.text_inputs["new_note_text"] = ""
-    addNotif("D Nota añadida a la agenda")
+    addNotif("📅 Nota añadida a la agenda")
 end
 
 local function saveEditNoteFromModal()
@@ -1597,7 +1489,7 @@ local function saveEditNoteFromModal()
     note.amounts = collectNoteAmounts("edit")
     note.duration = note.duration or 1
     saveNotes()
-    addNotif("Edit Nota actualizada")
+    addNotif("✏ Nota actualizada")
     G.edit_note_modal = nil
 end
 
@@ -1749,7 +1641,7 @@ local function drawDropdown(x, y, w, h, key, options)
     love.graphics.print(sel, x + 9, y + (h - G.fonts.normal:getHeight()) / 2)
     
     setColor(C.dim)
-    love.graphics.print("v", x + w - 20, y + (h - G.fonts.normal:getHeight()) / 2)
+    love.graphics.print("▾", x + w - 20, y + (h - G.fonts.normal:getHeight()) / 2)
 
     if G.dropdown == key then
         local dy = y + h + 2
@@ -1853,7 +1745,7 @@ local function executeCloseCash()
         end
     end
     saveClients()
-    addNotif(string.format("$ Caja cerrada — %d membresía(s) diaria(s) vencida(s)", n))
+    addNotif(string.format("💰 Caja cerrada — %d membresía(s) diaria(s) vencida(s)", n))
 end
 
 local function openCloseCashSummary()
@@ -1891,12 +1783,12 @@ local function executePendingAction()
         client.expiry = subscriptionExpiry(client.plan, st, client.plan_dias)
         saveClients()
         saveTx(planAmount(client.plan, client.plan_dias, client.plan_precio_dia), client.plan, client.nombres .. " " .. client.apellidos, "renovacion")
-        addNotif(string.format("<> Suscripción de %s renovada (%s)", client.nombres, client.plan))
+        addNotif(string.format("🔄 Suscripción de %s renovada (%s)", client.nombres, client.plan))
     elseif action.kind == "delete" and idx then
         local name = client.nombres or "Cliente"
         table.remove(G.clients, idx)
         saveClients()
-        addNotif(string.format("X Cliente %s eliminado", name))
+        addNotif(string.format("🗑 Cliente %s eliminado", name))
     end
 
     G.pending_action = nil
@@ -1925,7 +1817,7 @@ local function drawPendingActionDialog()
     local title = action.kind == "renew" and "RENOVAR CLIENTE" or "ELIMINAR CLIENTE"
     setColor(action.kind == "renew" and C.green or C.red)
     love.graphics.setFont(G.fonts.large)
-    love.graphics.printf("!  " .. title, dx, dy + 16, dw, "center")
+    love.graphics.printf("⚠  " .. title, dx, dy + 16, dw, "center")
 
     setColor(C.gray)
     love.graphics.setFont(G.fonts.small)
@@ -1963,7 +1855,7 @@ local function drawCloseSummaryDialog()
 
     setColor(C.yellow)
     love.graphics.setFont(G.fonts.large)
-    love.graphics.printf("$ RESUMEN DE CIERRE DE CAJA", dx, dy + 14, dw, "center")
+    love.graphics.printf("💰 RESUMEN DE CIERRE DE CAJA", dx, dy + 14, dw, "center")
 
     setColor(C.gray)
     love.graphics.setFont(G.fonts.small)
@@ -2026,7 +1918,7 @@ local function drawCloseSummaryDialog()
     local cancel_hov = hover(dx + 260, dy + dh - 54, 120, 38)
     local ok_hov = hover(dx + 390, dy + dh - 54, 140, 38)
     drawButton(dx + 260, dy + dh - 54, 120, 38, "Cancelar", C.btn_cancel, C.white, G.fonts.normal, 6, cancel_hov)
-    drawButton(dx + 390, dy + dh - 54, 140, 38, "[v] Cerrar caja", {0.65, 0.08, 0.08}, C.white, G.fonts.normal, 6, ok_hov)
+    drawButton(dx + 390, dy + dh - 54, 140, 38, "✓ Cerrar caja", {0.65, 0.08, 0.08}, C.white, G.fonts.normal, 6, ok_hov)
 end
 
 -- ============= CERRAR CAJA =============
@@ -2190,11 +2082,8 @@ local function drawInicio()
     love.graphics.setFont(G.fonts.large)
     love.graphics.print("Panel de Control Principal", ox, oy + 4)
     
-    local upd_hov = hover(ox + aw - 260, oy, 120, 30)
-    drawButton(ox + aw - 260, oy, 120, 30, "⚙  Update", C.orange, C.white, G.fonts.small, 5, upd_hov)
-    
     local ref_hov = hover(ox + aw - 135, oy, 120, 30)
-    drawButton(ox + aw - 135, oy, 120, 30, "R  Refrescar", C.card2, C.white, G.fonts.small, 5, ref_hov)
+    drawButton(ox + aw - 135, oy, 120, 30, "↺  Refrescar", C.card2, C.white, G.fonts.small, 5, ref_hov)
 
     -- Stat cards
     local now_d = os.date("*t")
@@ -2308,8 +2197,6 @@ local function drawInicio()
     end
     love.graphics.setScissor()
 
-    registerScrollBar("inicio_notifs", nx + nw - 10, ny + 34, 8, math.max(0, nh_full - 34), G.scroll.inicio_notifs or 0, math.max(0, #G.notifs * 46))
-
     -- Client list
     local list_y = chart_y + 180 + 10
     local list_h = H - list_y - 12
@@ -2335,7 +2222,7 @@ local function drawInicio()
     end)
 
     local row_h = 48
-    local sc = G.scroll.inicio_clients or 0
+    local sc = G.scroll.inicio
 
     love.graphics.setScissor(ox + 4, list_y + 32, chart_w - 8, list_h - 36)
     for i, c in ipairs(sorted) do
@@ -2385,7 +2272,6 @@ local function drawInicio()
         ::cont::
     end
     love.graphics.setScissor()
-    registerScrollBar("inicio_clients", ox + chart_w - 10, list_y + 32, 8, math.max(0, list_h - 36), G.scroll.inicio_clients or 0, math.max(0, #sorted * row_h))
 end
 
 -- ============= PANTALLA: REGISTRO =============
@@ -2486,9 +2372,9 @@ local function drawRegistro()
     local c_hov = hover(ox + form_w - 270, btn_y, 120, 38)
     local s_hov = hover(ox + form_w - 140, btn_y, 125, 38)
 
-    drawButton(fx, btn_y, 110, 38, "IMC IMC", C.orange, C.white, G.fonts.normal, 6, bmi_hov)
+    drawButton(fx, btn_y, 110, 38, "⚖ IMC", C.orange, C.white, G.fonts.normal, 6, bmi_hov)
     drawButton(ox + form_w - 270, btn_y, 120, 38, "CANCELAR", C.btn_cancel, C.white, G.fonts.normal, 6, c_hov)
-    drawButton(ox + form_w - 140, btn_y, 125, 38, "[v] GUARDAR", C.btn_green, C.white, G.fonts.normal, 6, s_hov)
+    drawButton(ox + form_w - 140, btn_y, 125, 38, "✓ GUARDAR", C.btn_green, C.white, G.fonts.normal, 6, s_hov)
 
     -- Photo panel
     local px2 = ox + form_w + 10
@@ -2508,10 +2394,10 @@ local function drawRegistro()
 
     setColor(C.dim)
     love.graphics.setFont(G.fonts.large)
-    love.graphics.printf("U", px2 + 12, py2 + 72, pw2 - 24, "center")
+    love.graphics.printf("👤", px2 + 12, py2 + 72, pw2 - 24, "center")
 
     local up_hov = hover(px2 + 12, py2 + 170, pw2 - 24, 30)
-    drawButton(px2 + 12, py2 + 170, pw2 - 24, 30, "Img Subir Foto", C.sidebar_sel, C.white, G.fonts.small, 5, up_hov)
+    drawButton(px2 + 12, py2 + 170, pw2 - 24, 30, "📷 Subir Foto", C.sidebar_sel, C.white, G.fonts.small, 5, up_hov)
 
     -- Requirements
     local req_y = py2 + ph2 + 8
@@ -2534,7 +2420,7 @@ local function drawRegistro()
         rr(px2 + 10, ry2, 18, 18, 4, checked and C.green or C.card2)
         setColor(checked and C.white or C.dim)
         love.graphics.setFont(G.fonts.normal)
-        love.graphics.printf(checked and "[v]" or "", px2 + 10, ry2 + 1, 18, "center")
+        love.graphics.printf(checked and "✓" or "", px2 + 10, ry2 + 1, 18, "center")
 
         setColor(C.white)
         love.graphics.setFont(G.fonts.tiny)
@@ -2620,7 +2506,7 @@ local function drawClientes()
     love.graphics.print("GESTIÓN DE CLIENTES", ox, oy + 4)
 
     -- Search
-    drawInput(ox + aw - 260, oy + 2, 245, 33, "cl_search", "* Buscar cliente...")
+    drawInput(ox + aw - 260, oy + 2, 245, 33, "cl_search", "🔍 Buscar cliente...")
 
     -- New client button
     local nc_hov = hover(ox + aw - 390, oy + 2, 120, 33)
@@ -2679,8 +2565,7 @@ local function drawClientes()
 
     local rh = 54
     local sc = G.scroll.clientes or 0
-    local view_h = th - 34
-    love.graphics.setScissor(ox + 2, ty + 30, aw - 4, view_h)
+    love.graphics.setScissor(ox + 2, ty + 30, aw - 4, th - 34)
     
     for i, c in ipairs(filtered) do
         local ry = ty + 32 + (i - 1) * rh - sc
@@ -2702,7 +2587,7 @@ local function drawClientes()
         setColor(C.dim)
         love.graphics.circle("line", cols[2] + 20, ry + 24, 20)
         love.graphics.setFont(G.fonts.normal)
-        love.graphics.printf("U", cols[2] + 5, ry + 14, 30, "center")
+        love.graphics.printf("👤", cols[2] + 5, ry + 14, 30, "center")
         
         -- Name
         setColor(C.white)
@@ -2753,14 +2638,12 @@ local function drawClientes()
         local r3h = hover(cols[8] + 98, ry + 6, 28, 20)
         
         drawButton(cols[8],      ry + 6, 60, 20, "Renovar", C.btn_green,    C.white, G.fonts.tiny, 4, r1h)
-        drawButton(cols[8] + 65, ry + 6, 28, 20, "Edit",       C.sidebar_sel,  C.white, G.fonts.tiny, 4, r2h)
-        drawButton(cols[8] + 98, ry + 6, 28, 20, "X",       {0.55, 0.1, 0.1}, C.white, G.fonts.tiny, 4, r3h)
+        drawButton(cols[8] + 65, ry + 6, 28, 20, "✏",       C.sidebar_sel,  C.white, G.fonts.tiny, 4, r2h)
+        drawButton(cols[8] + 98, ry + 6, 28, 20, "🗑",       {0.55, 0.1, 0.1}, C.white, G.fonts.tiny, 4, r3h)
         
         ::cont2::
     end
     love.graphics.setScissor()
-
-    registerScrollBar("clientes", ox + aw - 10, ty + 30, 8, math.max(0, view_h), G.scroll.clientes or 0, math.max(0, #filtered * rh))
 
     -- Row count
     setColor(C.dim)
@@ -2786,7 +2669,7 @@ local function drawAgenda()
     love.graphics.setFont(G.fonts.large)
     love.graphics.print("PANEL DE ANOTACIONES", ox, oy + 4)
 
-    drawInput(ox + aw - 250, oy + 2, 235, 32, "ag_search", "* Buscar anotaciones...")
+    drawInput(ox + aw - 250, oy + 2, 235, 32, "ag_search", "🔍 Buscar anotaciones...")
 
     local views = {"Día", "Semana", "Mes"}
     local vkeys = {"dia", "semana", "mes"}
@@ -2805,8 +2688,8 @@ local function drawAgenda()
     local wed = os.date("*t", we)
 
     local nav_cx = ox + aw / 2
-    drawButton(nav_cx - 140, oy + 42, 30, 26, "<", C.card, C.white, G.fonts.normal, 4, hover(nav_cx - 140, oy + 42, 30, 26))
-    drawButton(nav_cx + 112, oy + 42, 30, 26, ">", C.card, C.white, G.fonts.normal, 4, hover(nav_cx + 112, oy + 42, 30, 26))
+    drawButton(nav_cx - 140, oy + 42, 30, 26, "◀", C.card, C.white, G.fonts.normal, 4, hover(nav_cx - 140, oy + 42, 30, 26))
+    drawButton(nav_cx + 112, oy + 42, 30, 26, "▶", C.card, C.white, G.fonts.normal, 4, hover(nav_cx + 112, oy + 42, 30, 26))
 
     setColor(C.white)
     love.graphics.setFont(G.fonts.normal)
@@ -2857,9 +2740,8 @@ local function drawAgenda()
         love.graphics.setLineWidth(1)
     end
 
-    local view_h = gh - hdr_h
     local sc = G.scroll.agenda or 0
-    love.graphics.setScissor(gx, gy + hdr_h, gw, view_h)
+    love.graphics.setScissor(gx, gy + hdr_h, gw, gh - hdr_h)
 
     for h = 0, n_hours do
         local hour = 8 + h
@@ -2906,15 +2788,13 @@ local function drawAgenda()
                     setColor(C.white)
                     love.graphics.setFont(G.fonts.tiny)
                     love.graphics.print("+", nx2 + nw2 - 68, hy + 3)
-                    love.graphics.print("Edit", nx2 + nw2 - 44, hy + 3)
-                    love.graphics.print("x", nx2 + nw2 - 20, hy + 3)
+                    love.graphics.print("✏", nx2 + nw2 - 44, hy + 3)
+                    love.graphics.print("✗", nx2 + nw2 - 20, hy + 3)
                 end
             end
         end
     end
     love.graphics.setScissor()
-
-    registerScrollBar("agenda", gx + gw - 10, gy + hdr_h, 8, math.max(0, view_h), G.scroll.agenda or 0, math.max(0, n_hours * hour_h))
 
     local by2 = gy + gh + 5
     local bh2 = H - by2 - 8
@@ -2989,7 +2869,7 @@ local function drawConfiguracion()
     rr(ox, oy + 42, left_w, 312, 8, C.card)
     setColor(C.white)
     love.graphics.setFont(G.fonts.normal)
-    love.graphics.print("P Precios por plan", ox + 12, oy + 54)
+    love.graphics.print("💳 Precios por plan", ox + 12, oy + 54)
 
     setColor(C.gray)
     love.graphics.setFont(G.fonts.small)
@@ -3005,7 +2885,7 @@ local function drawConfiguracion()
     rr(ox + left_w + 12, oy + 42, right_w, 260, 8, C.card)
     setColor(C.white)
     love.graphics.setFont(G.fonts.normal)
-    love.graphics.print("T Tema de colores", ox + left_w + 24, oy + 54)
+    love.graphics.print("🎨 Tema de colores", ox + left_w + 24, oy + 54)
 
     setColor(C.gray)
     love.graphics.setFont(G.fonts.small)
@@ -3056,12 +2936,11 @@ local function drawConfiguracion()
         rr(tx0 + right_w - 20, ty0, 10, th_view, 4, C.card2)
         rr(tx0 + right_w - 20, bar_y, 10, bar_h, 4, C.sidebar_sel)
     end
-    registerScrollBar("configuracion", tx0 + right_w - 16, ty0, 8, th_view, G.scroll.configuracion or 0, math.max(0, math.ceil(#themes / 2) * row_h))
 
     rr(ox, oy + 366, aw, H - (oy + 366) - 18, 8, C.card)
     setColor(C.white)
     love.graphics.setFont(G.fonts.normal)
-    love.graphics.print("! Notificaciones", ox + 12, oy + 378)
+    love.graphics.print("🔔 Notificaciones", ox + 12, oy + 378)
 
     setColor(C.gray)
     love.graphics.setFont(G.fonts.small)
@@ -3104,7 +2983,7 @@ local function drawSoporte()
     rr(ox, oy + 38, hw, 110, 8, C.card)
     setColor(C.blue)
     love.graphics.setFont(G.fonts.medium)
-    love.graphics.print("! GymManager v1.0", ox + 12, oy + 50)
+    love.graphics.print("⚡ GymManager v1.0", ox + 12, oy + 50)
 
     setColor(C.gray)
     love.graphics.setFont(G.fonts.small)
@@ -3123,7 +3002,7 @@ local function drawSoporte()
     rr(ox + hw + 12, oy + 38, hw, 110, 8, C.card)
     setColor(C.yellow)
     love.graphics.setFont(G.fonts.normal)
-    love.graphics.print("G Estado del Sistema", ox + hw + 24, oy + 50)
+    love.graphics.print("📊 Estado del Sistema", ox + hw + 24, oy + 50)
 
     setColor(C.white)
     love.graphics.setFont(G.fonts.small)
@@ -3142,50 +3021,44 @@ local function drawSoporte()
 
     setColor(C.white)
     love.graphics.setFont(G.fonts.medium)
-    love.graphics.print("? Guía de Uso", ox + 12, gy + 12)
+    love.graphics.print("📖 Guía de Uso", ox + 12, gy + 12)
 
     local guide = {
-        {"H  Inicio",       "Panel principal con estadísticas, gráfica de transacciones y lista de clientes. Los clientes en rojo tienen membresía vencida."},
-        {"N  Registro",     string.format("Registra nuevos clientes. Planes: Diario ($%d), Semanal ($%d), Quincenal ($%d), Mensual ($%d) y ESPECIAL (días × precio/día). Los 3 requisitos se marcan con click antes de guardar.", PLAN_PRICES.Diario or 0, PLAN_PRICES.Semanal or 0, PLAN_PRICES.Quincenal or 0, PLAN_PRICES.Mensual or 0)},
-        {"Us  Clientes",     "Busca, filtra, renueva o elimina clientes. Renovar y eliminar ahora piden confirmación en dos pasos para evitar errores."},
-        {"D  Agenda",       "Crea y administra anotaciones por día y hora. Navega por semanas con los botones y usa el buscador para encontrar notas."},
-        {"$  Cerrar Caja",  "Abre un resumen del día con ingresos, ingresos nuevos, renovaciones y planes antes de cerrar la caja."},
-        {"Cfg  Configuración", "Cambia precios, tema visual y notificaciones. El bloque de temas ahora se puede desplazar con la rueda del mouse."},
-        {"S  Persistencia", "Todo se guarda automáticamente en CSV: clientes, transacciones y notas."},
+        {"🏠  Inicio",       "Panel principal con estadísticas, gráfica de transacciones y lista de clientes. Los clientes en rojo tienen membresía vencida."},
+        {"📝  Registro",     string.format("Registra nuevos clientes. Planes: Diario ($%d), Semanal ($%d), Quincenal ($%d), Mensual ($%d) y ESPECIAL (días × precio/día). Los 3 requisitos se marcan con click antes de guardar.", PLAN_PRICES.Diario or 0, PLAN_PRICES.Semanal or 0, PLAN_PRICES.Quincenal or 0, PLAN_PRICES.Mensual or 0)},
+        {"👥  Clientes",     "Busca, filtra, renueva o elimina clientes. Renovar y eliminar ahora piden confirmación en dos pasos para evitar errores."},
+        {"📅  Agenda",       "Crea y administra anotaciones por día y hora. Navega por semanas con los botones y usa el buscador para encontrar notas."},
+        {"💰  Cerrar Caja",  "Abre un resumen del día con ingresos, ingresos nuevos, renovaciones y planes antes de cerrar la caja."},
+        {"⚙  Configuración", "Cambia precios, tema visual y notificaciones. El bloque de temas ahora se puede desplazar con la rueda del mouse."},
+        {"💾  Persistencia", "Todo se guarda automáticamente en CSV: clientes, transacciones y notas."},
     }
 
-    local view_y = gy + 35
-    local view_h = gh - 35
-    local sc = G.scroll.soporte or 0
-    local row_y = gy + 42 - sc
-    love.graphics.setScissor(ox + 4, view_y, aw - 12, view_h)
+    local row_y = gy + 42
+    love.graphics.setScissor(ox + 4, gy + 35, aw - 8, gh - 35)
 
     for _, item in ipairs(guide) do
         if row_y + 40 > gy + gh then break end
 
-        if row_y + 40 >= view_y then
-            setColor(C.cyan)
-            love.graphics.setFont(G.fonts.normal)
-            love.graphics.print(item[1], ox + 12, row_y)
+        setColor(C.cyan)
+        love.graphics.setFont(G.fonts.normal)
+        love.graphics.print(item[1], ox + 12, row_y)
 
-            setColor(C.gray)
-            love.graphics.setFont(G.fonts.small)
-            love.graphics.printf(item[2], ox + 180, row_y + 2, aw - 200, "left")
+        setColor(C.gray)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.printf(item[2], ox + 180, row_y + 2, aw - 200, "left")
 
-            setColor(C.border)
-            love.graphics.setLineWidth(0.5)
-            love.graphics.line(ox + 8, row_y + 28, ox + aw - 8, row_y + 28)
-            love.graphics.setLineWidth(1)
-        end
+        setColor(C.border)
+        love.graphics.setLineWidth(0.5)
+        love.graphics.line(ox + 8, row_y + 28, ox + aw - 8, row_y + 28)
+        love.graphics.setLineWidth(1)
 
         row_y = row_y + 36
     end
 
-    local shortcuts_y = row_y + 8
-    if shortcuts_y < gy + gh then
+    if row_y + 160 < gy + gh then
         setColor(C.yellow)
         love.graphics.setFont(G.fonts.normal)
-        love.graphics.print("K  Atajos de Teclado", ox + 12, shortcuts_y)
+        love.graphics.print("⌨  Atajos de Teclado", ox + 12, row_y + 8)
 
         local shortcuts = {
             "F1 → Inicio",
@@ -3205,19 +3078,16 @@ local function drawSoporte()
 
         setColor(C.gray)
         love.graphics.setFont(G.fonts.small)
-        for i, sc_shortcut in ipairs(shortcuts) do
+        for i, sc in ipairs(shortcuts) do
             local sx = ox + 12 + ((i - 1) % 3) * 210
-            local sy = shortcuts_y + 28 + math.floor((i - 1) / 3) * 18
+            local sy = row_y + 28 + math.floor((i - 1) / 3) * 18
             if sy < gy + gh - 5 then
-                love.graphics.print(sc_shortcut, sx, sy)
+                love.graphics.print(sc, sx, sy)
             end
         end
     end
 
     love.graphics.setScissor()
-
-    local content_h = math.max(#guide * 36 + 200, gh - 35)
-    registerScrollBar("soporte", ox + aw - 10, view_y, 8, math.max(0, view_h), G.scroll.soporte or 0, content_h)
 end
 
 -- ============= TRANSACCIONES: HELPERS =============
@@ -3356,7 +3226,7 @@ local function saveTxEditModal()
     -- Re-sort
     table.sort(G.transactions, function(a, b) return a.ts < b.ts end)
     saveTxAll()
-    addNotif("Edit Transacción actualizada")
+    addNotif("✏ Transacción actualizada")
     G.tx_edit_modal = nil
 end
 
@@ -3377,7 +3247,7 @@ local function saveTxNewModal()
     table.insert(G.transactions, nt)
     table.sort(G.transactions, function(a, b) return a.ts < b.ts end)
     saveTxAll()
-    addNotif("+ Nueva transacción creada")
+    addNotif("➕ Nueva transacción creada")
     G.tx_new_modal = nil
 end
 
@@ -3485,7 +3355,7 @@ local function drawTxModal(modal, is_new)
     setColor(C.border)
     rrLine(dx, dy, dw, dh, 10)
 
-    local title = is_new and "+ Nueva Transacción" or "Edit Editar Transacción"
+    local title = is_new and "➕ Nueva Transacción" or "✏ Editar Transacción"
     setColor(is_new and C.green or C.yellow)
     love.graphics.setFont(G.fonts.medium)
     love.graphics.printf(title, dx, dy + 14, dw, "center")
@@ -3540,7 +3410,7 @@ local function drawTxModal(modal, is_new)
         rr(rx, ry, 286, 120, 8, C.card2)
         setColor(C.gray)
         love.graphics.setFont(G.fonts.small)
-        love.graphics.printf("Usa D para cambiar la fecha\ny H para ajustar la hora.", rx + 12, ry + 20, 262, "left")
+        love.graphics.printf("Usa 📅 para cambiar la fecha\ny 🕐 para ajustar la hora.", rx + 12, ry + 20, 262, "left")
         setColor(C.dim)
         love.graphics.setFont(G.fonts.tiny)
         love.graphics.printf("Los cambios se reflejan al guardar.", rx + 12, ry + 80, 262, "left")
@@ -3550,7 +3420,7 @@ local function drawTxModal(modal, is_new)
     local cancel_hov = hover(dx + dw - 290, dy + dh - 50, 130, 36)
     local save_hov   = hover(dx + dw - 148, dy + dh - 50, 130, 36)
     drawButton(dx + dw - 290, dy + dh - 50, 130, 36, "Cancelar",  C.btn_cancel, C.white, G.fonts.normal, 6, cancel_hov)
-    drawButton(dx + dw - 148, dy + dh - 50, 130, 36, "[v] Guardar", C.btn_green,  C.white, G.fonts.normal, 6, save_hov)
+    drawButton(dx + dw - 148, dy + dh - 50, 130, 36, "✓ Guardar", C.btn_green,  C.white, G.fonts.normal, 6, save_hov)
 end
 
 -- ============= TRANSACCIONES: DELETE CONFIRM =============
@@ -3573,9 +3443,9 @@ local function drawTxDeleteConfirm()
     setColor(C.red)
     love.graphics.setFont(G.fonts.medium)
     if info.stage == 1 then
-        love.graphics.printf("!  Eliminar transacción", dx, dy + 16, dw, "center")
+        love.graphics.printf("⚠  Eliminar transacción", dx, dy + 16, dw, "center")
     else
-        love.graphics.printf("!  ¿Confirmar eliminación?", dx, dy + 16, dw, "center")
+        love.graphics.printf("⚠  ¿Confirmar eliminación?", dx, dy + 16, dw, "center")
     end
 
     setColor(C.white)
@@ -3620,7 +3490,7 @@ local function drawTransacciones()
 
     -- Search bar
     local search_x = ox + aw - 320
-    drawInput(search_x, oy + 2, 305, 33, "tx_search", "* Buscar cliente, plan, tipo...")
+    drawInput(search_x, oy + 2, 305, 33, "tx_search", "🔍 Buscar cliente, plan, tipo...")
 
     -- New transaction button
     local new_hov = hover(ox + aw - 470, oy + 2, 140, 33)
@@ -3664,8 +3534,7 @@ local function drawTransacciones()
 
     local rh = 48
     local sc = G.scroll.transacciones or 0
-    local view_h = th - 34
-    love.graphics.setScissor(ox + 2, ty + 30, aw - 4, view_h)
+    love.graphics.setScissor(ox + 2, ty + 30, aw - 4, th - 34)
 
     for disp_i, item in ipairs(display) do
         local t   = item.tx
@@ -3675,7 +3544,12 @@ local function drawTransacciones()
 
         -- Row bg
         local tipo = (t.tipo or "registro"):lower()
-        local row_bg = disp_i % 2 == 0 and C.row_b or C.row_a
+        local row_bg
+        if tipo == "renovacion" then
+            row_bg = disp_i % 2 == 0 and {0.06, 0.10, 0.07} or {0.07, 0.11, 0.08}
+        else
+            row_bg = disp_i % 2 == 0 and C.row_b or C.row_a
+        end
         setColor(row_bg)
         love.graphics.rectangle("fill", ox + 4, ry, aw - 8, rh - 2, 4, 4)
 
@@ -3727,8 +3601,6 @@ local function drawTransacciones()
     end
     love.graphics.setScissor()
 
-    registerScrollBar("transacciones", ox + aw - 10, ty + 30, 8, math.max(0, view_h), G.scroll.transacciones or 0, math.max(0, #display * rh))
-
     -- Row count
     setColor(C.dim)
     love.graphics.setFont(G.fonts.tiny)
@@ -3760,13 +3632,13 @@ local function drawSidebar()
     love.graphics.setLineWidth(1)
 
     local navItems = {
-        {icon = "H", label = "Inicio",   key = "inicio"},
-        {icon = "N", label = "Registro", key = "registro"},
-        {icon = "U", label = "Clientes", key = "clientes"},
-        {icon = "D", label = "Agenda",        key = "agenda"},
-        {icon = "P", label = "Transacciones", key = "transacciones"},
-        {icon = "C",  label = "Configuración", key = "configuracion"},
-        {icon = "i",  label = "Soporte",        key = "soporte"},
+        {icon = "🏠", label = "Inicio",   key = "inicio"},
+        {icon = "📝", label = "Registro", key = "registro"},
+        {icon = "👥", label = "Clientes", key = "clientes"},
+        {icon = "📅", label = "Agenda",        key = "agenda"},
+        {icon = "💳", label = "Transacciones", key = "transacciones"},
+        {icon = "⚙",  label = "Configuración", key = "configuracion"},
+        {icon = "ℹ",  label = "Soporte",        key = "soporte"},
     }
     
     for i, item in ipairs(navItems) do
@@ -3794,7 +3666,7 @@ local function drawSidebar()
     
     setColor(C.white)
     love.graphics.setFont(G.fonts.normal)
-    love.graphics.printf("$ CERRAR CAJA", 8, cc_y + 15, SIDEBAR_W - 16, "center")
+    love.graphics.printf("💰 CERRAR CAJA", 8, cc_y + 15, SIDEBAR_W - 16, "center")
 end
 
 local function drawHeader()
@@ -3822,7 +3694,7 @@ local function drawHeader()
 
     setColor(C.gray)
     love.graphics.setFont(G.fonts.small)
-    love.graphics.print("!  Admin  |  Cerrar Sesión", W - 185, 18)
+    love.graphics.print("🔔  Admin  |  Cerrar Sesión", W - 185, 18)
     
     if #G.notifs > 0 then
         setColor(C.red)
@@ -3920,7 +3792,7 @@ local function drawNewNoteDialog()
     local s_h = hover(dx + dw - 138, dy + dh - 52, 122, 38)
 
     drawButton(dx + dw - 270, dy + dh - 52, 120, 38, "Cancelar", C.btn_cancel, C.white, G.fonts.normal, 6, c_h)
-    drawButton(dx + dw - 138, dy + dh - 52, 122, 38, "[v] Guardar", C.btn_green, C.white, G.fonts.normal, 6, s_h)
+    drawButton(dx + dw - 138, dy + dh - 52, 122, 38, "✓ Guardar", C.btn_green, C.white, G.fonts.normal, 6, s_h)
 end
 
 local function drawEditNoteDialog()
@@ -3943,7 +3815,7 @@ local function drawEditNoteDialog()
 
     setColor(C.yellow)
     love.graphics.setFont(G.fonts.medium)
-    love.graphics.print("Edit  Editar anotación", dx + 14, dy + 14)
+    love.graphics.print("✏  Editar anotación", dx + 14, dy + 14)
 
     setColor(C.gray)
     love.graphics.setFont(G.fonts.small)
@@ -4001,7 +3873,7 @@ local function drawEditNoteDialog()
     local s_h = hover(dx + dw - 138, dy + dh - 52, 122, 38)
 
     drawButton(dx + dw - 270, dy + dh - 52, 120, 38, "Cancelar", C.btn_cancel, C.white, G.fonts.normal, 6, c_h)
-    drawButton(dx + dw - 138, dy + dh - 52, 122, 38, "[v] Guardar", C.btn_green, C.white, G.fonts.normal, 6, s_h)
+    drawButton(dx + dw - 138, dy + dh - 52, 122, 38, "✓ Guardar", C.btn_green, C.white, G.fonts.normal, 6, s_h)
 end
 
 local function drawNoteAmountConfirmDialog()
@@ -4053,7 +3925,7 @@ local function drawRenewDialog()
 
     setColor(C.yellow)
     love.graphics.setFont(G.fonts.medium)
-    love.graphics.printf("<> Renovar suscripción", dx, dy + 14, dw, "center")
+    love.graphics.printf("🔄 Renovar suscripción", dx, dy + 14, dw, "center")
 
     setColor(C.white)
     love.graphics.setFont(G.fonts.small)
@@ -4143,7 +4015,7 @@ local function applyRenewModal()
     client.expiry = subscriptionExpiry(client.plan, st, client.plan_dias)
     saveClients()
     saveTx(planAmount(client.plan, client.plan_dias, client.plan_precio_dia), client.plan, (client.nombres or "") .. " " .. (client.apellidos or ""), "renovacion")
-    addNotif(string.format("<> Suscripción de %s renovada (%s)", client.nombres or "Cliente", client.plan or "—"))
+    addNotif(string.format("🔄 Suscripción de %s renovada (%s)", client.nombres or "Cliente", client.plan or "—"))
     G.renew_modal = nil
 end
 
@@ -4168,7 +4040,7 @@ local function drawEditClientDialog()
 
     setColor(C.white)
     love.graphics.setFont(G.fonts.medium)
-    love.graphics.printf("Edit Editar cliente", dx, dy + 14, dw, "center")
+    love.graphics.printf("✏ Editar cliente", dx, dy + 14, dw, "center")
 
     setColor(C.gray)
     love.graphics.setFont(G.fonts.small)
@@ -4311,7 +4183,7 @@ local function saveEditClientModal()
     client.start_ts = tsFromDateParts(action.cal_year, action.cal_month, action.selected_day or 1)
     client.expiry = subscriptionExpiry(client.plan, client.start_ts, client.plan_dias)
     saveClients()
-    addNotif(string.format("Edit %s actualizado correctamente", client.nombres or "Cliente"))
+    addNotif(string.format("✏ %s actualizado correctamente", client.nombres or "Cliente"))
     G.edit_client_modal = nil
 end
 
@@ -4328,7 +4200,7 @@ local function drawBMICalcDialog()
 
     setColor(C.white)
     love.graphics.setFont(G.fonts.medium)
-    love.graphics.printf("IMC Calculadora de IMC", dx, dy + 14, dw, "center")
+    love.graphics.printf("⚖ Calculadora de IMC", dx, dy + 14, dw, "center")
 
     setColor(C.gray)
     love.graphics.setFont(G.fonts.small)
@@ -4434,15 +4306,15 @@ function love.load()
     loadTx()
     loadNotes()
 
-    addNotif("+ Sistema iniciado correctamente")
-    addNotif("Hi Bienvenido a GymManager v1.0")
+    addNotif("✅ Sistema iniciado correctamente")
+    addNotif("👋 Bienvenido a GymManager v1.0")
 
     -- Expiry warnings
     for _, c in ipairs(G.clients) do
         if c.expiry then
             local dl = (c.expiry - os.time()) / 86400
             if dl > 0 and dl <= 3 then
-                addNotif(string.format("! %s %s vence en %d día(s)", c.nombres, c.apellidos, math.ceil(dl)))
+                addNotif(string.format("⚠ %s %s vence en %d día(s)", c.nombres, c.apellidos, math.ceil(dl)))
             end
         end
     end
@@ -4457,7 +4329,6 @@ function love.update(dt)
 end
 
 function love.draw()
-    G.scrollbars = {}
     setColor(C.bg)
     love.graphics.rectangle("fill", 0, 0, W, H)
     
@@ -4611,7 +4482,7 @@ function love.keypressed(key)
             else
                 table.remove(G.transactions, info.idx)
                 saveTxAll()
-                addNotif("X Transacción eliminada")
+                addNotif("🗑 Transacción eliminada")
                 G.tx_delete_confirm = nil
             end
         elseif G.tx_edit_modal then
@@ -4633,9 +4504,9 @@ function love.keypressed(key)
             G.settings.notif_limit = clamp(tonumber(G.text_inputs.set_notif_limit) or 25, 1, 99)
             syncPlanPrices()
             saveSettings()
-            addNotif("S Configuración guardada")
+            addNotif("💾 Configuración guardada")
         else
-            addNotif("i Ctrl+S guarda la configuración en la pestaña de ajustes")
+            addNotif("ℹ Ctrl+S guarda la configuración en la pestaña de ajustes")
         end
         return
 
@@ -4692,7 +4563,7 @@ function love.keypressed(key)
         loadClients()
         loadTx()
         loadNotes()
-        addNotif("<> Datos recargados")
+        addNotif("🔄 Datos recargados")
     end
 end
 function love.mousepressed(x, y, btn)
@@ -5109,7 +4980,7 @@ function love.mousepressed(x, y, btn)
             else
                 table.remove(G.transactions, info.idx)
                 saveTxAll()
-                addNotif("X Transacción eliminada")
+                addNotif("🗑 Transacción eliminada")
                 G.tx_delete_confirm = nil
             end
             return
@@ -5341,13 +5212,6 @@ function love.mousepressed(x, y, btn)
     end
 
     -- Screen-specific
-
-    local bar = scrollBarAt(mx, my)
-    if bar then
-        startScrollDrag(bar, mx, my)
-        return
-    end
-
     if G.screen == "registro" then
         local ox, oy2 = SIDEBAR_W + 18, HEADER_H + 8
         local aw2 = W - SIDEBAR_W - 30
@@ -5445,11 +5309,11 @@ function love.mousepressed(x, y, btn)
         elseif hover(ox + form_w2 - 140, btn_y2, 125, 38) then
             local n2 = G.text_inputs["nombres"] or ""
             if n2 == "" then
-                addNotif("! Ingresa al menos el nombre del cliente")
+                addNotif("⚠ Ingresa al menos el nombre del cliente")
                 return
             end
             if not registrationReady() then
-                addNotif("! Marca los 3 requisitos antes de guardar")
+                addNotif("⚠ Marca los 3 requisitos antes de guardar")
                 return
             end
 
@@ -5486,11 +5350,9 @@ function love.mousepressed(x, y, btn)
 
             resetRegistrationForm()
 
-            addNotif(string.format("+ Cliente %s registrado — Plan %s", n2, plan2))
+            addNotif(string.format("✅ Cliente %s registrado — Plan %s", n2, plan2))
             G.screen = "clientes"
         end
-
-
 
     elseif G.screen == "clientes" then
         local ox2, oy2 = SIDEBAR_W + 15, HEADER_H + 8
@@ -5630,7 +5492,7 @@ function love.mousepressed(x, y, btn)
                         end
                         saveNotes()
                         G.ag_selected = nil
-                        addNotif("X Nota eliminada de la agenda")
+                        addNotif("🗑 Nota eliminada de la agenda")
                     end
                     return
                 end
@@ -5682,7 +5544,7 @@ function love.mousepressed(x, y, btn)
             if hover(tx, ty, tw, 58) then
                 applyTheme(th)
                 saveSettings()
-                addNotif("T Tema aplicado: " .. th)
+                addNotif("🎨 Tema aplicado: " .. th)
                 return
             end
             ::continue_theme_click::
@@ -5695,7 +5557,7 @@ function love.mousepressed(x, y, btn)
             if hover(bx, by, 60, 26) then
                 G.settings.notif_color = nc
                 saveSettings()
-                addNotif("! Color de notificación: " .. nc)
+                addNotif("🔔 Color de notificación: " .. nc)
                 return
             end
         end
@@ -5713,7 +5575,7 @@ function love.mousepressed(x, y, btn)
             G.text_inputs.set_price_Quincenal = tostring(PLAN_PRICES.Quincenal or 0)
             G.text_inputs.set_price_Mensual = tostring(PLAN_PRICES.Mensual or 0)
             G.text_inputs.set_notif_limit = tostring(G.settings.notif_limit)
-            addNotif("S Configuración guardada")
+            addNotif("💾 Configuración guardada")
             return
         elseif hover(ox2 + aw2 - 130, H - 66, 120, 38) then
             G.settings = copyTable(DEFAULT_SETTINGS)
@@ -5725,7 +5587,7 @@ function love.mousepressed(x, y, btn)
             G.text_inputs.set_price_Mensual = tostring(PLAN_PRICES.Mensual or 0)
             G.text_inputs.set_notif_limit = tostring(G.settings.notif_limit)
             saveSettings()
-            addNotif("<- Configuración restaurada")
+            addNotif("↩ Configuración restaurada")
             return
         end
 
@@ -5776,7 +5638,6 @@ function love.mousepressed(x, y, btn)
             end
         end
 
-
     elseif G.screen == "inicio" then
         local ox2, oy2 = SIDEBAR_W + 15, HEADER_H + 10
         local aw2 = W - SIDEBAR_W - 25
@@ -5788,19 +5649,6 @@ function love.mousepressed(x, y, btn)
         local bw, bh = 68, 24
         local mkeys = {"horas", "dias", "meses"}
 
-        if hover(ox2 + aw2 - 260, oy2, 120, 30) then
-            runLocalUpdateBat()
-            return
-        end
-
-        if hover(ox2 + aw2 - 135, oy2, 120, 30) then
-            loadClients()
-            loadTx()
-            loadNotes()
-            addNotif("🔄 Datos recargados")
-            return
-        end
-
         for i = 1, 3 do
             local bx2 = ox2 + chart_w - (4 - i) * (bw + 6) - 14
             if hover(bx2, chart_y + 9, bw, bh) then
@@ -5810,30 +5658,11 @@ function love.mousepressed(x, y, btn)
         end
     end
 end
-function love.mousemoved(x, y, dx, dy)
-    if G.scroll_drag then
-        updateScrollDrag(x, y)
-    end
-end
-
-function love.mousereleased(x, y, btn)
-    if btn == 1 then
-        stopScrollDrag()
-    end
-end
-
 function love.wheelmoved(x, y)
     if G.pending_action or G.show_close_summary or G.show_new_note then return end
 
     if G.screen == "inicio" then
-        local mx, my = love.mouse.getPosition()
-        if G.scrollbars and G.scrollbars.inicio_notifs and mx >= G.scrollbars.inicio_notifs.x and mx <= G.scrollbars.inicio_notifs.x + G.scrollbars.inicio_notifs.w and my >= G.scrollbars.inicio_notifs.y and my <= G.scrollbars.inicio_notifs.y + G.scrollbars.inicio_notifs.h then
-            G.scroll.inicio_notifs = clamp((G.scroll.inicio_notifs or 0) - y * 28, 0, G.scrollbars.inicio_notifs.max_scroll or 0)
-        elseif G.scrollbars and G.scrollbars.inicio_clients and mx >= G.scrollbars.inicio_clients.x and mx <= G.scrollbars.inicio_clients.x + G.scrollbars.inicio_clients.w and my >= G.scrollbars.inicio_clients.y and my <= G.scrollbars.inicio_clients.y + G.scrollbars.inicio_clients.h then
-            G.scroll.inicio_clients = clamp((G.scroll.inicio_clients or 0) - y * 28, 0, G.scrollbars.inicio_clients.max_scroll or math.max(0, #G.clients * 48 - 160))
-        else
-            G.scroll.inicio_clients = clamp((G.scroll.inicio_clients or 0) - y * 28, 0, math.max(0, #G.clients * 48 - 160))
-        end
+        G.scroll.inicio = clamp((G.scroll.inicio or 0) - y * 28, 0, math.max(0, #G.clients * 48 - 160))
     elseif G.screen == "clientes" then
         G.scroll.clientes = clamp((G.scroll.clientes or 0) - y * 28, 0, math.max(0, #G.clients * 54 - 200))
     elseif G.screen == "transacciones" then
@@ -5851,11 +5680,10 @@ function love.wheelmoved(x, y)
         local max_scroll = math.max(0, math.ceil(#themes / 2) * row_h - th_view)
         G.scroll.configuracion = clamp((G.scroll.configuracion or 0) - y * 28, 0, max_scroll)
     elseif G.screen == "soporte" then
-        local view_h = math.max(0, (H - (HEADER_H + 8 + 162) - 50) - 35)
-        local content_h = math.max(0, 7 * 36 + 200)
-        G.scroll.soporte = clamp((G.scroll.soporte or 0) - y * 28, 0, math.max(0, content_h - view_h))
+        G.scroll.soporte = clamp((G.scroll.soporte or 0) - y * 28, 0, 500)
     end
 end
+
 function love.resize(w, h) 
     W = w
     H = h

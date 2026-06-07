@@ -54,9 +54,7 @@ local G = {
     text_inputs  = {},
     focus        = nil,
     dropdown     = nil,
-    scroll       = {inicio = 0, inicio_notifs = 0, clientes = 0, agenda = 0, configuracion = 0, soporte = 0, transacciones = 0},
-    scrollbars   = {},
-    scroll_drag  = nil,
+    scroll       = {inicio = 0, clientes = 0, agenda = 0, configuracion = 0, soporte = 0, transacciones = 0},
     settings     = {},
     chart_mode   = "dias",
     ag_view      = "semana",
@@ -537,90 +535,6 @@ local function rrLine(x, y, w, h, r, c, a)
     if c then setColor(c, a) end
     love.graphics.rectangle("line", x, y, w, h, r or 6, r or 6)
 end
-
-local function scrollMetrics(scroll, content_h, view_h)
-    content_h = math.max(0, tonumber(content_h) or 0)
-    view_h = math.max(0, tonumber(view_h) or 0)
-    local max_scroll = math.max(0, content_h - view_h)
-    scroll = clamp(tonumber(scroll) or 0, 0, max_scroll)
-
-    if max_scroll <= 0 then
-        return scroll, max_scroll, view_h, 0, 0
-    end
-
-    local min_thumb = 28
-    local thumb_h = math.max(min_thumb, math.floor((view_h * view_h) / math.max(content_h, 1)))
-    thumb_h = math.min(thumb_h, view_h)
-    local travel = math.max(1, view_h - thumb_h)
-    local thumb_y = math.floor((scroll / max_scroll) * travel + 0.5)
-    return scroll, max_scroll, thumb_h, thumb_y, travel
-end
-
-local function registerScrollBar(key, x, y, w, h, scroll, content_h)
-    G.scrollbars = G.scrollbars or {}
-    local s, max_scroll, thumb_h, thumb_y = scrollMetrics(scroll, content_h, h)
-    if max_scroll <= 0 then
-        G.scrollbars[key] = nil
-        return nil
-    end
-
-    G.scrollbars[key] = {
-        key = key,
-        x = x, y = y, w = w, h = h,
-        scroll = s,
-        content_h = content_h,
-        max_scroll = max_scroll,
-        thumb_h = thumb_h,
-        thumb_y = thumb_y,
-    }
-
-    rr(x, y, w, h, math.min(4, w / 2), C.border, 0.75)
-    rr(x + 1, y + thumb_y, math.max(1, w - 2), thumb_h, math.min(4, w / 2), C.sidebar_sel, 0.95)
-    return G.scrollbars[key]
-end
-
-local function scrollBarAt(mx, my)
-    if not G.scrollbars then return nil end
-    for _, bar in pairs(G.scrollbars) do
-        if mx >= bar.x and mx <= bar.x + bar.w and my >= bar.y and my <= bar.y + bar.h then
-            return bar
-        end
-    end
-end
-
-local function setScrollValue(key, value)
-    G.scroll = G.scroll or {}
-    G.scroll[key] = value
-end
-
-local function startScrollDrag(bar, mx, my)
-    if not bar or bar.max_scroll <= 0 then return end
-    local rel = clamp(my - bar.y - (bar.thumb_h / 2), 0, math.max(0, bar.h - bar.thumb_h))
-    local ratio = (bar.h - bar.thumb_h) > 0 and (rel / (bar.h - bar.thumb_h)) or 0
-    local new_scroll = math.floor(ratio * bar.max_scroll + 0.5)
-    setScrollValue(bar.key, new_scroll)
-    G.scroll_drag = {
-        key = bar.key,
-        bar = bar,
-        grab = my - (bar.y + bar.thumb_y),
-    }
-end
-
-local function updateScrollDrag(mx, my)
-    local drag = G.scroll_drag
-    if not drag or not drag.bar then return end
-    local bar = drag.bar
-    if bar.max_scroll <= 0 then return end
-    local travel = math.max(1, bar.h - bar.thumb_h)
-    local rel = clamp(my - bar.y - drag.grab, 0, travel)
-    local ratio = travel > 0 and (rel / travel) or 0
-    setScrollValue(bar.key, math.floor(ratio * bar.max_scroll + 0.5))
-end
-
-local function stopScrollDrag()
-    G.scroll_drag = nil
-end
-
 
 local function hover(x, y, w, h)
     local mx, my = love.mouse.getPosition()
@@ -2308,8 +2222,6 @@ local function drawInicio()
     end
     love.graphics.setScissor()
 
-    registerScrollBar("inicio_notifs", nx + nw - 10, ny + 34, 8, math.max(0, nh_full - 34), G.scroll.inicio_notifs or 0, math.max(0, #G.notifs * 46))
-
     -- Client list
     local list_y = chart_y + 180 + 10
     local list_h = H - list_y - 12
@@ -2335,7 +2247,7 @@ local function drawInicio()
     end)
 
     local row_h = 48
-    local sc = G.scroll.inicio_clients or 0
+    local sc = G.scroll.inicio
 
     love.graphics.setScissor(ox + 4, list_y + 32, chart_w - 8, list_h - 36)
     for i, c in ipairs(sorted) do
@@ -2385,7 +2297,6 @@ local function drawInicio()
         ::cont::
     end
     love.graphics.setScissor()
-    registerScrollBar("inicio_clients", ox + chart_w - 10, list_y + 32, 8, math.max(0, list_h - 36), G.scroll.inicio_clients or 0, math.max(0, #sorted * row_h))
 end
 
 -- ============= PANTALLA: REGISTRO =============
@@ -2679,8 +2590,7 @@ local function drawClientes()
 
     local rh = 54
     local sc = G.scroll.clientes or 0
-    local view_h = th - 34
-    love.graphics.setScissor(ox + 2, ty + 30, aw - 4, view_h)
+    love.graphics.setScissor(ox + 2, ty + 30, aw - 4, th - 34)
     
     for i, c in ipairs(filtered) do
         local ry = ty + 32 + (i - 1) * rh - sc
@@ -2759,8 +2669,6 @@ local function drawClientes()
         ::cont2::
     end
     love.graphics.setScissor()
-
-    registerScrollBar("clientes", ox + aw - 10, ty + 30, 8, math.max(0, view_h), G.scroll.clientes or 0, math.max(0, #filtered * rh))
 
     -- Row count
     setColor(C.dim)
@@ -2857,9 +2765,8 @@ local function drawAgenda()
         love.graphics.setLineWidth(1)
     end
 
-    local view_h = gh - hdr_h
     local sc = G.scroll.agenda or 0
-    love.graphics.setScissor(gx, gy + hdr_h, gw, view_h)
+    love.graphics.setScissor(gx, gy + hdr_h, gw, gh - hdr_h)
 
     for h = 0, n_hours do
         local hour = 8 + h
@@ -2913,8 +2820,6 @@ local function drawAgenda()
         end
     end
     love.graphics.setScissor()
-
-    registerScrollBar("agenda", gx + gw - 10, gy + hdr_h, 8, math.max(0, view_h), G.scroll.agenda or 0, math.max(0, n_hours * hour_h))
 
     local by2 = gy + gh + 5
     local bh2 = H - by2 - 8
@@ -3056,7 +2961,6 @@ local function drawConfiguracion()
         rr(tx0 + right_w - 20, ty0, 10, th_view, 4, C.card2)
         rr(tx0 + right_w - 20, bar_y, 10, bar_h, 4, C.sidebar_sel)
     end
-    registerScrollBar("configuracion", tx0 + right_w - 16, ty0, 8, th_view, G.scroll.configuracion or 0, math.max(0, math.ceil(#themes / 2) * row_h))
 
     rr(ox, oy + 366, aw, H - (oy + 366) - 18, 8, C.card)
     setColor(C.white)
@@ -3154,38 +3058,32 @@ local function drawSoporte()
         {"S  Persistencia", "Todo se guarda automáticamente en CSV: clientes, transacciones y notas."},
     }
 
-    local view_y = gy + 35
-    local view_h = gh - 35
-    local sc = G.scroll.soporte or 0
-    local row_y = gy + 42 - sc
-    love.graphics.setScissor(ox + 4, view_y, aw - 12, view_h)
+    local row_y = gy + 42
+    love.graphics.setScissor(ox + 4, gy + 35, aw - 8, gh - 35)
 
     for _, item in ipairs(guide) do
         if row_y + 40 > gy + gh then break end
 
-        if row_y + 40 >= view_y then
-            setColor(C.cyan)
-            love.graphics.setFont(G.fonts.normal)
-            love.graphics.print(item[1], ox + 12, row_y)
+        setColor(C.cyan)
+        love.graphics.setFont(G.fonts.normal)
+        love.graphics.print(item[1], ox + 12, row_y)
 
-            setColor(C.gray)
-            love.graphics.setFont(G.fonts.small)
-            love.graphics.printf(item[2], ox + 180, row_y + 2, aw - 200, "left")
+        setColor(C.gray)
+        love.graphics.setFont(G.fonts.small)
+        love.graphics.printf(item[2], ox + 180, row_y + 2, aw - 200, "left")
 
-            setColor(C.border)
-            love.graphics.setLineWidth(0.5)
-            love.graphics.line(ox + 8, row_y + 28, ox + aw - 8, row_y + 28)
-            love.graphics.setLineWidth(1)
-        end
+        setColor(C.border)
+        love.graphics.setLineWidth(0.5)
+        love.graphics.line(ox + 8, row_y + 28, ox + aw - 8, row_y + 28)
+        love.graphics.setLineWidth(1)
 
         row_y = row_y + 36
     end
 
-    local shortcuts_y = row_y + 8
-    if shortcuts_y < gy + gh then
+    if row_y + 160 < gy + gh then
         setColor(C.yellow)
         love.graphics.setFont(G.fonts.normal)
-        love.graphics.print("K  Atajos de Teclado", ox + 12, shortcuts_y)
+        love.graphics.print("K  Atajos de Teclado", ox + 12, row_y + 8)
 
         local shortcuts = {
             "F1 → Inicio",
@@ -3205,19 +3103,16 @@ local function drawSoporte()
 
         setColor(C.gray)
         love.graphics.setFont(G.fonts.small)
-        for i, sc_shortcut in ipairs(shortcuts) do
+        for i, sc in ipairs(shortcuts) do
             local sx = ox + 12 + ((i - 1) % 3) * 210
-            local sy = shortcuts_y + 28 + math.floor((i - 1) / 3) * 18
+            local sy = row_y + 28 + math.floor((i - 1) / 3) * 18
             if sy < gy + gh - 5 then
-                love.graphics.print(sc_shortcut, sx, sy)
+                love.graphics.print(sc, sx, sy)
             end
         end
     end
 
     love.graphics.setScissor()
-
-    local content_h = math.max(#guide * 36 + 200, gh - 35)
-    registerScrollBar("soporte", ox + aw - 10, view_y, 8, math.max(0, view_h), G.scroll.soporte or 0, content_h)
 end
 
 -- ============= TRANSACCIONES: HELPERS =============
@@ -3664,8 +3559,7 @@ local function drawTransacciones()
 
     local rh = 48
     local sc = G.scroll.transacciones or 0
-    local view_h = th - 34
-    love.graphics.setScissor(ox + 2, ty + 30, aw - 4, view_h)
+    love.graphics.setScissor(ox + 2, ty + 30, aw - 4, th - 34)
 
     for disp_i, item in ipairs(display) do
         local t   = item.tx
@@ -3726,8 +3620,6 @@ local function drawTransacciones()
         ::cont_tx::
     end
     love.graphics.setScissor()
-
-    registerScrollBar("transacciones", ox + aw - 10, ty + 30, 8, math.max(0, view_h), G.scroll.transacciones or 0, math.max(0, #display * rh))
 
     -- Row count
     setColor(C.dim)
@@ -4457,7 +4349,6 @@ function love.update(dt)
 end
 
 function love.draw()
-    G.scrollbars = {}
     setColor(C.bg)
     love.graphics.rectangle("fill", 0, 0, W, H)
     
@@ -5341,13 +5232,6 @@ function love.mousepressed(x, y, btn)
     end
 
     -- Screen-specific
-
-    local bar = scrollBarAt(mx, my)
-    if bar then
-        startScrollDrag(bar, mx, my)
-        return
-    end
-
     if G.screen == "registro" then
         local ox, oy2 = SIDEBAR_W + 18, HEADER_H + 8
         local aw2 = W - SIDEBAR_W - 30
@@ -5489,8 +5373,6 @@ function love.mousepressed(x, y, btn)
             addNotif(string.format("+ Cliente %s registrado — Plan %s", n2, plan2))
             G.screen = "clientes"
         end
-
-
 
     elseif G.screen == "clientes" then
         local ox2, oy2 = SIDEBAR_W + 15, HEADER_H + 8
@@ -5776,7 +5658,6 @@ function love.mousepressed(x, y, btn)
             end
         end
 
-
     elseif G.screen == "inicio" then
         local ox2, oy2 = SIDEBAR_W + 15, HEADER_H + 10
         local aw2 = W - SIDEBAR_W - 25
@@ -5810,30 +5691,11 @@ function love.mousepressed(x, y, btn)
         end
     end
 end
-function love.mousemoved(x, y, dx, dy)
-    if G.scroll_drag then
-        updateScrollDrag(x, y)
-    end
-end
-
-function love.mousereleased(x, y, btn)
-    if btn == 1 then
-        stopScrollDrag()
-    end
-end
-
 function love.wheelmoved(x, y)
     if G.pending_action or G.show_close_summary or G.show_new_note then return end
 
     if G.screen == "inicio" then
-        local mx, my = love.mouse.getPosition()
-        if G.scrollbars and G.scrollbars.inicio_notifs and mx >= G.scrollbars.inicio_notifs.x and mx <= G.scrollbars.inicio_notifs.x + G.scrollbars.inicio_notifs.w and my >= G.scrollbars.inicio_notifs.y and my <= G.scrollbars.inicio_notifs.y + G.scrollbars.inicio_notifs.h then
-            G.scroll.inicio_notifs = clamp((G.scroll.inicio_notifs or 0) - y * 28, 0, G.scrollbars.inicio_notifs.max_scroll or 0)
-        elseif G.scrollbars and G.scrollbars.inicio_clients and mx >= G.scrollbars.inicio_clients.x and mx <= G.scrollbars.inicio_clients.x + G.scrollbars.inicio_clients.w and my >= G.scrollbars.inicio_clients.y and my <= G.scrollbars.inicio_clients.y + G.scrollbars.inicio_clients.h then
-            G.scroll.inicio_clients = clamp((G.scroll.inicio_clients or 0) - y * 28, 0, G.scrollbars.inicio_clients.max_scroll or math.max(0, #G.clients * 48 - 160))
-        else
-            G.scroll.inicio_clients = clamp((G.scroll.inicio_clients or 0) - y * 28, 0, math.max(0, #G.clients * 48 - 160))
-        end
+        G.scroll.inicio = clamp((G.scroll.inicio or 0) - y * 28, 0, math.max(0, #G.clients * 48 - 160))
     elseif G.screen == "clientes" then
         G.scroll.clientes = clamp((G.scroll.clientes or 0) - y * 28, 0, math.max(0, #G.clients * 54 - 200))
     elseif G.screen == "transacciones" then
@@ -5851,11 +5713,10 @@ function love.wheelmoved(x, y)
         local max_scroll = math.max(0, math.ceil(#themes / 2) * row_h - th_view)
         G.scroll.configuracion = clamp((G.scroll.configuracion or 0) - y * 28, 0, max_scroll)
     elseif G.screen == "soporte" then
-        local view_h = math.max(0, (H - (HEADER_H + 8 + 162) - 50) - 35)
-        local content_h = math.max(0, 7 * 36 + 200)
-        G.scroll.soporte = clamp((G.scroll.soporte or 0) - y * 28, 0, math.max(0, content_h - view_h))
+        G.scroll.soporte = clamp((G.scroll.soporte or 0) - y * 28, 0, 500)
     end
 end
+
 function love.resize(w, h) 
     W = w
     H = h
